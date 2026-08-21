@@ -39,6 +39,15 @@ import { logger } from '../lib/logger.js';
 const PUBLIC_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../public');
 
 /**
+ * The single-page app served at `/` and as the deep-link fallback.
+ *
+ * Prefers the React build when it is present, and falls back to the standalone
+ * portal otherwise, so this backend still serves a usable interface in a
+ * deployment that does not include the React bundle.
+ */
+const SHELL_FILE = existsSync(join(PUBLIC_DIR, 'index.html')) ? 'index.html' : 'portal.html';
+
+/**
  * Policy for the app pages.
  *
  * `unsafe-inline` is required because these are deliberately single-file
@@ -76,11 +85,22 @@ export function htmlContentSecurityPolicy(): string {
  * the real problem, which is that the URL was wrong.
  */
 export function isApiPath(url: string): boolean {
-  return url.startsWith('/v1/') || url.startsWith('/healthz') || url.startsWith('/readyz');
+  return (
+    url.startsWith('/v1/') ||
+    // The compatibility layer the existing React frontend calls.
+    url.startsWith('/api/') ||
+    url.startsWith('/healthz') ||
+    url.startsWith('/readyz')
+  );
 }
 
 export function hasFrontend(): boolean {
   return existsSync(PUBLIC_DIR);
+}
+
+/** The file the not-found handler in index.ts should fall back to. */
+export function shellFile(): string {
+  return SHELL_FILE;
 }
 
 /**
@@ -120,8 +140,14 @@ export async function registerAppShell(app: AnyFastifyInstance): Promise<void> {
     serveDotFiles: false,
   });
 
-  app.get('/', async (_req, reply) => reply.sendFile('portal.html'));
+  /**
+   * `/` serves the existing React application (public/index.html), which is
+   * the product people already use. The two single-file pages built alongside
+   * this backend stay reachable at their own paths rather than replacing it.
+   */
+  app.get('/', async (_req, reply) => reply.sendFile(SHELL_FILE));
   app.get('/intake', async (_req, reply) => reply.sendFile('permit-intake.html'));
+  app.get('/portal', async (_req, reply) => reply.sendFile('portal.html'));
 
   logger.info({ dir: PUBLIC_DIR }, 'serving frontend from the API');
 }

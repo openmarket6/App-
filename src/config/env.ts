@@ -69,6 +69,20 @@ const schema = z.object({
   EMAIL_FROM: z.string().email().optional(),
 
   // ---------------------------------------------------------------------------
+  // Native authentication (the /api/auth contract the existing frontend uses)
+  //
+  // Two separate secrets on purpose: an access token leaked from a browser must
+  // not be usable to mint refresh tokens, and the two have very different
+  // lifetimes and blast radii.
+  // ---------------------------------------------------------------------------
+  AUTH_JWT_SECRET: z.string().min(32).optional(),
+  AUTH_REFRESH_SECRET: z.string().min(32).optional(),
+  /** Access token lifetime. Short, because it cannot be revoked once issued. */
+  AUTH_ACCESS_TTL_SECONDS: z.coerce.number().int().positive().default(900),
+  /** Refresh lifetime. Revocable, so it can safely be much longer. */
+  AUTH_REFRESH_TTL_SECONDS: z.coerce.number().int().positive().default(60 * 60 * 24 * 30),
+
+  // ---------------------------------------------------------------------------
   // Security
   // ---------------------------------------------------------------------------
   /** Comma-separated exact origins. Never "*" -- see buildCorsOptions. */
@@ -117,6 +131,8 @@ function load(): Env {
   // Fail the boot rather than run a production deploy that is quietly degraded.
   if (env.NODE_ENV === 'production') {
     const required: Array<[keyof Env, string]> = [
+      ['AUTH_JWT_SECRET', 'the existing frontend cannot sign in without it'],
+      ['AUTH_REFRESH_SECRET', 'sessions cannot be refreshed without it'],
       ['DATABASE_SERVICE_URL', 'background jobs and webhooks cannot run without the service role'],
       ['SUPABASE_URL', 'authentication cannot be verified'],
       ['SUPABASE_SERVICE_ROLE_KEY', 'file uploads and downloads cannot be signed'],
@@ -149,5 +165,8 @@ export const paymentsConfigured = Boolean(env.STRIPE_SECRET_KEY && env.STRIPE_WE
 
 /** True when file storage is fully configured. */
 export const storageConfigured = Boolean(env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY);
+
+/** True when native email/password sign-in is available. */
+export const nativeAuthConfigured = Boolean(env.AUTH_JWT_SECRET && env.AUTH_REFRESH_SECRET);
 
 export { isProd };
