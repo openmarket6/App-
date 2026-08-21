@@ -659,7 +659,7 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
    * response names the area so it is obvious which one is missing.
    */
   const NOT_MIGRATED = [
-    'corrections', 'inspections', 'signing', 'notary', 'support',
+    'signing', 'notary', 'support',
     'connectors', 'integrations', 'google', 'billing', 'admin',
   ];
 
@@ -690,7 +690,7 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/_migration-status', async () => ({
     migrated: [
       'auth', 'dashboard', 'clients', 'permits', 'jurisdictions',
-      'supervision/visits', 'users',
+      'supervision/visits', 'users', 'corrections', 'inspections',
     ],
     notMigrated: NOT_MIGRATED,
     note:

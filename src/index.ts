@@ -35,6 +35,8 @@ import { municipalIntegrationRoutes } from './routes/municipalIntegration.js';
 import { registerAppShell, isApiPath, hasFrontend, htmlContentSecurityPolicy, shellFile } from './routes/app-shell.js';
 import { compatAuthRoutes } from './routes/compat/auth.js';
 import { compatApiRoutes } from './routes/compat/api.js';
+import { compatCorrectionsRoutes } from './routes/compat/corrections.js';
+import { compatInspectionsRoutes } from './routes/compat/inspections.js';
 import { supervisionRoutes } from './routes/supervision.js';
 
 export async function buildServer() {
@@ -254,6 +256,8 @@ export async function buildServer() {
   // Compatibility layer for the existing React frontend: same /api contract,
   // backed by Postgres instead of Netlify Blobs.
   await app.register(compatAuthRoutes);
+  await app.register(compatCorrectionsRoutes);
+  await app.register(compatInspectionsRoutes);
   await app.register(compatApiRoutes);
 
   // Last: serves the portal and intake form from this same service, so the

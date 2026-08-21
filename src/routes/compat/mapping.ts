@@ -211,3 +211,29 @@ export function toIntegrationTier(row: {
   if (row.platform && row.platform !== 'none') return 'portal';
   return 'manual';
 }
+
+/**
+ * Inspection results.
+ *
+ * Stored lowercase to match this schema's conventions, surfaced uppercase
+ * because that is the vocabulary compiled into the frontend. The mapping is a
+ * plain case change, but it goes through named functions so the two spellings
+ * never get compared directly by accident.
+ */
+export const INSPECTION_RESULTS = [
+  'SCHEDULED', 'PASSED', 'FAILED', 'PARTIAL', 'CANCELLED', 'NO_SHOW',
+] as const;
+
+export type InspectionResult = (typeof INSPECTION_RESULTS)[number];
+
+export function toInspectionResult(stored: string | null | undefined): InspectionResult {
+  const upper = String(stored ?? 'scheduled').toUpperCase();
+  return (INSPECTION_RESULTS as readonly string[]).includes(upper)
+    ? (upper as InspectionResult)
+    : 'SCHEDULED';
+}
+
+export function fromInspectionResult(value: string): string | null {
+  const upper = value.toUpperCase();
+  return (INSPECTION_RESULTS as readonly string[]).includes(upper) ? upper.toLowerCase() : null;
+}
