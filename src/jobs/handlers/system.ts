@@ -169,8 +169,55 @@ async function purgeDeletedDocuments(): Promise<unknown> {
   return { purged, failed };
 }
 
+/**
+ * Daily snapshot of how much of Florida is actually automated.
+ *
+ * Logged rather than stored: it is an operational signal ("we verified two more
+ * jurisdictions this month"), not customer data. It also surfaces jurisdictions
+ * configured but never verified, which is the state where someone started an
+ * integration and forgot to finish it.
+ */
+async function integrationCoverage(): Promise<unknown> {
+  return withServiceContext(
+    async (tx) => {
+      const row = await tx.one<{
+        total: string; verified: string; automated: string; configured_unverified: string;
+      }>(
+        `select count(*)::text as total,
+                count(*) filter (where adapter_verified_at is not null)::text as verified,
+                count(*) filter (where status_check_enabled)::text as automated,
+                count(*) filter (
+                  where adapter_verified_at is null
+                    and api_config ? 'statusCheck'
+                )::text as configured_unverified
+           from ocs.municipalities where is_active`,
+      );
+
+      const summary = {
+        jurisdictions: Number(row?.total ?? 0),
+        verified: Number(row?.verified ?? 0),
+        automated: Number(row?.automated ?? 0),
+        configuredButNotVerified: Number(row?.configured_unverified ?? 0),
+      };
+
+      logger.info(summary, 'municipal integration coverage');
+
+      if (summary.configuredButNotVerified > 0) {
+        logger.warn(
+          { count: summary.configuredButNotVerified },
+          'jurisdictions are configured but never verified; they still fall back to manual lookup',
+        );
+      }
+
+      return summary;
+    },
+    { reason: 'integration_coverage_report' },
+  );
+}
+
 export function register(): void {
   registerHandler('system.reap_stuck_jobs', reap);
+  registerHandler('integrations.coverage_report', integrationCoverage);
   registerHandler('system.cleanup_idempotency', cleanupIdempotency);
   registerHandler('system.retry_failed_webhooks', retryFailedWebhooks);
   registerHandler('payments.reconcile', reconcilePayments);

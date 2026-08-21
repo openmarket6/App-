@@ -8,6 +8,9 @@ payments, and scheduled municipal status checks.
 Built to keep one contractor's data unreachable from another's — enforced by the
 database, not by remembering to write the right `WHERE` clause.
 
+**New to deploying?** Start with **[HOSTING.md](HOSTING.md)** — a step-by-step
+setup guide written for someone who has not hosted a backend before.
+
 ---
 
 ## Architecture
@@ -227,6 +230,8 @@ All routes are under `/v1`. Authentication is `Authorization: Bearer <token>`.
 | Identity | `GET/PATCH /me`, `POST /companies`, `GET/PATCH /company`, `GET/POST/PATCH /company/members` |
 | Projects | `GET/POST /projects`, `GET/PATCH/DELETE /projects/:id` |
 | Permits | `GET/POST /permits`, `GET/PATCH/DELETE /permits/:id`, `POST /permits/:id/status`, `GET /municipalities` |
+| Permit intake | `GET /permit-intake/form-schema`, `GET/POST /permit-applications`, `GET/PATCH /permit-applications/:id`, `POST .../submit`, `POST .../review`, `POST .../convert`, subcontractors, document links |
+| Municipal integration | `GET /admin/integrations/coverage`, `GET /admin/integrations/platforms`, `PATCH /admin/municipalities/:id/integration`, `POST .../test-connection`, `POST .../verify`, `PUT /municipalities/:id/credentials` |
 | Drafting | `GET/POST /drafting-orders`, `GET /drafting-orders/:id`, `POST /drafting-orders/:id/assign`, `POST /drafting-orders/:id/revisions`, `POST .../revisions/:id/decision`, markups |
 | Documents | `GET /documents`, `POST /documents/upload-init`, `POST /documents/:id/versions/:vid/complete`, `GET /documents/:id/download`, `DELETE`/`restore`, `GET/POST /folders` |
 | Compliance | `GET/POST/PATCH /licenses`, `GET/POST /insurance-policies`, `GET/POST /qualifiers`, `GET /compliance/summary` |
@@ -263,6 +268,66 @@ every time rather than frozen into a stored link.
 
 ---
 
+## Permit intake
+
+`POST /v1/permit-applications` starts an application; the response carries a
+**live required-document checklist** and a readiness assessment. Both are
+recomputed on every save from `src/domain/permitIntake.ts`, so they always
+reflect the current answers rather than a snapshot taken at creation.
+
+The Florida rules encoded there are the ones applications actually get rejected
+for:
+
+| Rule | Effect |
+|---|---|
+| Notice of Commencement over $2,500 (Fla. Stat. 713.13) | Becomes required the moment valuation crosses the threshold |
+| HVHZ — Miami-Dade and Broward | Requires a Miami-Dade NOA; a statewide Florida Product Approval is **not** accepted |
+| FEMA flood zone / 50% substantial improvement | Requires an elevation certificate (zone X correctly does not) |
+| Owner-builder | Swaps contractor license + insurance for the owner-builder affidavit |
+| Demolition | Requires an asbestos survey |
+| Subcontractors | Each trade sub must be named, licensed, and carry workers' comp or a filed exemption |
+
+HVHZ is **derived from the county**, never taken from the form — whether HVHZ
+rules apply is a fact about the address, not something an applicant asserts. The
+same is true of the NOC threshold. Both are database triggers, so every write
+path gets them.
+
+A ready-to-use form lives at **`public/permit-intake.html`** — self-contained,
+no build step, no dependencies. Open it, point it at your API, and it works.
+
+Flow: `draft → submitted → in_review → accepted → converted` (to a permit), with
+`info_requested` returning it to the contractor and `rejected` requiring a
+reason they can act on.
+
+---
+
+## Municipal integrations
+
+**There is no single API for Florida permitting, and there will not be one.**
+Roughly 400 jurisdictions issue permits, and they buy from about a dozen
+software vendors — Accela, Tyler EnerGov, OpenGov, CentralSquare, CityView,
+MyGovernmentOnline and a handful of others. Many publish no API at all.
+
+So integration is modelled **per vendor, configured per jurisdiction**. The
+status-check adapter is configuration-driven: a jurisdiction's `api_config`
+says where to call, how to authenticate, which response field holds the status,
+and how that vendor's wording maps onto ours. Onboarding is a configuration
+task performed while looking at a real response — not a code change based on a
+guess.
+
+Every jurisdiction is **manual until verified**, enforced three ways:
+
+1. `resolveForMunicipality()` returns a portal-link adapter unless
+   `adapter_verified_at` is set.
+2. A `CHECK` constraint refuses to enable checking without it.
+3. `POST .../verify` requires the permit number you actually tested against.
+
+An unrecognised status maps to `unknown` and is reported as an error, never
+guessed. `GET /v1/admin/integrations/coverage` shows what is automated and what
+is configured but never verified.
+
+---
+
 ## Background jobs
 
 The worker polls a Postgres-backed queue (`for update skip locked`). Jobs are
@@ -296,8 +361,9 @@ TEST_SERVICE_DATABASE_URL="postgresql://ocs_service:PASSWORD@localhost:5432/ocs_
   npm test
 ```
 
-24 tests run against a **real Postgres**, because RLS is a database behaviour —
-a mock would return whatever the test told it to and prove nothing.
+52 tests. The database ones run against a **real Postgres**, because RLS is a
+database behaviour — a mock would return whatever the test told it to and prove
+nothing.
 
 - `tenant-isolation.test.ts` (12) — cross-tenant reads, writes, IDOR, privilege
   escalation, append-only audit log, and a check that **every** table in the
@@ -306,6 +372,9 @@ a mock would return whatever the test told it to and prove nothing.
   per-company key scoping.
 - `business-rules.test.ts` (8) — status history, folder cycles, per-company
   numbering under concurrency, refund limits, job dedup.
+- `permit-intake.test.ts` (28) — every Florida rule above, submission readiness,
+  adapter status mapping and URL escaping, and the verification gate that keeps
+  an unverified jurisdiction from ever running automated checks.
 
 Tests skip cleanly when the `TEST_*` variables are unset.
 
@@ -320,7 +389,8 @@ running, but each should be settled before real customer data depends on it.
 |---|---|---|
 | **No malware scanning.** Uploads are marked `scan_status = 'skipped'`. | A contractor could upload an infected file and another user could download it. | Wire a scanner into `documents.purge_expired`'s sibling job; the schema, statuses and the download-time `infected` block already exist. |
 | **Rate limiting is per-instance.** | Scaling to N API instances multiplies the effective limit by N. | Point `@fastify/rate-limit` at a shared Redis store. |
-| **No municipal adapters are implemented.** All 103 jurisdictions are `manual`. | Permit status is not actually checked automatically yet. | Implement one at a time against the real portal (`createRestAdapter` is the template). Deliberately not guessed — a wrong adapter reports confidently wrong permit statuses, which is worse than none. |
+| **No jurisdiction is verified yet.** All 103 seeded jurisdictions are `manual`. | Permit status is not checked automatically yet; staff get a portal link instead. | Onboard them one at a time with test-connection → verify. The framework is built; each jurisdiction needs its real endpoint confirmed. |
+| **Permit submission and fee lookup are not implemented.** Only status *checking* is. | Applications are still filed by hand with the jurisdiction. | Add per-vendor submission once at least one jurisdiction's status check is proven in production. |
 | **No error tracking or alerting.** | A dead job or a spike of failed webhooks is only visible if someone looks. | Add Sentry; alert on `GET /v1/admin/jobs/dead` being non-empty. |
 | **Backups are Supabase defaults, restore untested.** | An untested restore is not a backup. | Do a real restore into a scratch project and time it. |
 | **Email is optional and unconfigured.** | Notifications appear in-app; delivery rows record `failed` with a reason. | Set `RESEND_API_KEY` and `EMAIL_FROM`. |

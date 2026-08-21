@@ -15,7 +15,8 @@
 import { withServiceContext, withWorkerTenant } from '../../db/tenant.js';
 import { enqueue, type JobRow } from '../queue.js';
 import { registerHandler, PermanentJobError } from '../runner.js';
-import { resolveAdapter, loadCredentials, type DetectedStatus } from '../../services/municipalities/adapter.js';
+import { loadCredentials, type DetectedStatus } from '../../services/municipalities/adapter.js';
+import { resolveForMunicipality } from '../../services/municipalities/vendors/index.js';
 import { notify } from '../../services/notifications.js';
 import { writeAudit } from '../../lib/audit.js';
 import { logger } from '../../lib/logger.js';
@@ -96,6 +97,11 @@ interface PermitDetail {
   portal_url: string | null;
   adapter_key: string | null;
   integration_method: string;
+  platform: string;
+  api_base_url: string | null;
+  api_config: Record<string, unknown>;
+  adapter_verified_at: string | null;
+  supports_status_check: boolean;
 }
 
 /** Map an adapter's detected status onto ocs.permit_status. */
@@ -116,7 +122,9 @@ async function checkOne(job: JobRow): Promise<unknown> {
         `select p.id, p.company_id, p.permit_number, p.external_reference, p.status::text,
                 p.municipality_id,
                 m.name as municipality_name, m.portal_url, m.adapter_key,
-                m.integration_method::text as integration_method
+                m.integration_method::text as integration_method,
+                m.platform::text as platform, m.api_base_url, m.api_config,
+                m.adapter_verified_at, m.supports_status_check
            from ocs.permits p
            left join ocs.municipalities m on m.id = p.municipality_id
           where p.id = $1 and p.deleted_at is null`,
@@ -130,9 +138,9 @@ async function checkOne(job: JobRow): Promise<unknown> {
     return { skipped: true, reason: `permit is ${detail.status}` };
   }
 
-  const adapter = resolveAdapter(detail.adapter_key);
-
   // Credentials are loaded inside the tenant's own context and never leave it.
+  // Keyed on the platform, so one stored login serves every jurisdiction a
+  // contractor accesses through the same vendor portal.
   const credentials =
     detail.municipality_id && env.INTEGRATION_ENCRYPTION_KEY
       ? await withWorkerTenant(
@@ -141,11 +149,28 @@ async function checkOne(job: JobRow): Promise<unknown> {
             loadCredentials(tx, {
               companyId: detail.company_id,
               municipalityId: detail.municipality_id!,
-              integrationKey: adapter.key,
+              integrationKey: detail.platform,
               encryptionKey: env.INTEGRATION_ENCRYPTION_KEY!,
             }),
         )
       : null;
+
+  // Picks the configured HTTP adapter only when this jurisdiction has been
+  // verified; otherwise falls back to "a person must check". See
+  // services/municipalities/vendors/index.ts.
+  const adapter = resolveForMunicipality(
+    {
+      id: detail.municipality_id ?? '',
+      name: detail.municipality_name ?? 'Unknown jurisdiction',
+      platform: detail.platform ?? 'none',
+      portal_url: detail.portal_url,
+      api_base_url: detail.api_base_url,
+      api_config: detail.api_config ?? {},
+      adapter_verified_at: detail.adapter_verified_at,
+      supports_status_check: detail.supports_status_check ?? false,
+    },
+    credentials,
+  );
 
   const result = await adapter.checkPermitStatus({
     permitId: detail.id,

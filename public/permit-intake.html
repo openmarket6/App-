@@ -1,0 +1,498 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Permit Intake — One Contractor Solutions</title>
+<!--
+  Permit intake form.
+
+  Self-contained: no build step, no dependencies, no CDN. Drop it on Netlify (or
+  open it locally) and point it at the API. That keeps it usable today while the
+  main frontend is rebuilt, and makes it a working reference for how the intake
+  endpoints fit together.
+
+  Two things it deliberately does NOT do:
+    * It never holds the Supabase service_role key. It signs in with the ANON
+      key, exactly as a browser should, and sends the resulting access token to
+      the API as a bearer token.
+    * It does not decide what documents are required. The checklist comes back
+      from the API on every save, so this form and the server can never disagree
+      about what a jurisdiction needs.
+-->
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --ink: #16191d;
+    --muted: #5b6470;
+    --line: #dfe3e8;
+    --accent: #1f4fd8;
+    --accent-ink: #ffffff;
+    --ok: #0f7a3d;
+    --warn: #9a6400;
+    --bad: #b3261e;
+    --warn-bg: #fff8e6;
+    --bad-bg: #fdecea;
+    --ok-bg: #e9f6ee;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14171b; --panel: #1c2026; --ink: #e8eaed; --muted: #9aa3ad;
+      --line: #2c323a; --accent: #6f93ff; --accent-ink: #10131a;
+      --ok: #6ee7a0; --warn: #f0c060; --bad: #ff9b93;
+      --warn-bg: #2e2718; --bad-bg: #33201e; --ok-bg: #16291f;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    background: var(--panel); border-bottom: 1px solid var(--line);
+    padding: 16px 20px; position: sticky; top: 0; z-index: 10;
+  }
+  header h1 { margin: 0; font-size: 17px; letter-spacing: -0.01em; }
+  header p { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 20px; }
+  .cols { display: grid; grid-template-columns: minmax(0,1fr) 340px; gap: 20px; align-items: start; }
+  @media (max-width: 900px) { .cols { grid-template-columns: 1fr; } }
+  section.card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 18px; margin-bottom: 16px;
+  }
+  section.card h2 {
+    margin: 0 0 4px; font-size: 14px; text-transform: uppercase;
+    letter-spacing: 0.06em; color: var(--muted);
+  }
+  section.card .hint { margin: 0 0 14px; color: var(--muted); font-size: 13px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+  label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+  label .opt { font-weight: 400; color: var(--muted); }
+  input, select, textarea {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px;
+    background: var(--bg); color: var(--ink); font: inherit; font-size: 14px;
+  }
+  input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  textarea { min-height: 84px; resize: vertical; }
+  .check { display: flex; align-items: flex-start; gap: 8px; margin: 8px 0; }
+  .check input { width: auto; margin-top: 3px; }
+  .check label { font-weight: 500; margin: 0; }
+  button {
+    font: inherit; font-weight: 600; padding: 9px 16px; border-radius: 7px;
+    border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink);
+    cursor: pointer;
+  }
+  button.ghost { background: transparent; color: var(--accent); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .sticky { position: sticky; top: 84px; }
+  ul.issues { list-style: none; margin: 0; padding: 0; }
+  ul.issues li {
+    padding: 8px 10px; border-radius: 7px; margin-bottom: 6px; font-size: 13px;
+    border-left: 3px solid transparent;
+  }
+  li.blocking { background: var(--bad-bg); border-left-color: var(--bad); }
+  li.warning  { background: var(--warn-bg); border-left-color: var(--warn); }
+  li.done     { background: var(--ok-bg);  border-left-color: var(--ok); }
+  .doc { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+  .doc:last-child { border-bottom: 0; }
+  .pill { font-size: 11px; padding: 2px 7px; border-radius: 99px; white-space: nowrap; }
+  .pill.missing { background: var(--bad-bg); color: var(--bad); }
+  .pill.provided { background: var(--ok-bg); color: var(--ok); }
+  .banner { padding: 10px 12px; border-radius: 8px; margin-bottom: 14px; font-size: 13px; }
+  .banner.err { background: var(--bad-bg); color: var(--bad); }
+  .banner.ok { background: var(--ok-bg); color: var(--ok); }
+  .banner.info { background: var(--warn-bg); color: var(--warn); }
+  .hidden { display: none !important; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  .status { font-size: 12px; color: var(--muted); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Permit Intake</h1>
+  <p>One Contractor Solutions — Florida permit application</p>
+</header>
+
+<div class="wrap">
+
+  <!-- Connection. Stored in this browser only; never sent anywhere but your own API. -->
+  <section class="card" id="setup">
+    <h2>Connection</h2>
+    <p class="hint">Saved in this browser only. The anon key is safe here — it is the public key Supabase intends browsers to use.</p>
+    <div class="grid">
+      <div><label>API base URL</label><input id="apiUrl" placeholder="https://ocs-api.onrender.com"></div>
+      <div><label>Supabase URL</label><input id="sbUrl" placeholder="https://xxxx.supabase.co"></div>
+      <div><label>Supabase anon key</label><input id="sbKey" type="password" placeholder="eyJ..."></div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <input id="email" placeholder="you@company.com" style="max-width:220px">
+      <input id="password" type="password" placeholder="password" style="max-width:180px">
+      <button id="loginBtn">Sign in</button>
+      <span class="status" id="authStatus">Not signed in</span>
+    </div>
+  </section>
+
+  <div id="banner" class="banner hidden"></div>
+
+  <div class="cols">
+    <div>
+      <form id="form">
+        <section class="card">
+          <h2>Jurisdiction &amp; permit type</h2>
+          <p class="hint">The jurisdiction decides which checklist applies.</p>
+          <div class="grid">
+            <div>
+              <label for="municipalityId">Jurisdiction</label>
+              <select id="municipalityId" name="municipalityId"><option value="">Select…</option></select>
+            </div>
+            <div>
+              <label for="permitType">Permit type</label>
+              <select id="permitType" name="permitType"></select>
+            </div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>Job site</h2>
+          <div class="grid">
+            <div style="grid-column:1/-1"><label for="siteAddressLine1">Street address</label><input id="siteAddressLine1" name="siteAddressLine1"></div>
+            <div><label for="siteCity">City</label><input id="siteCity" name="siteCity"></div>
+            <div><label for="siteCounty">County</label><input id="siteCounty" name="siteCounty" placeholder="e.g. Broward"></div>
+            <div><label for="sitePostalCode">ZIP</label><input id="sitePostalCode" name="sitePostalCode"></div>
+            <div><label for="parcelNumber">Parcel / folio <span class="opt">— recommended</span></label><input id="parcelNumber" name="parcelNumber"></div>
+            <div><label for="subdivision">Subdivision <span class="opt">— optional</span></label><input id="subdivision" name="subdivision"></div>
+            <div><label for="lot">Lot <span class="opt">— optional</span></label><input id="lot" name="lot"></div>
+            <div><label for="block">Block <span class="opt">— optional</span></label><input id="block" name="block"></div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>Property owner</h2>
+          <div class="grid">
+            <div><label for="ownerName">Owner name</label><input id="ownerName" name="ownerName"></div>
+            <div><label for="ownerPhone">Phone <span class="opt">— optional</span></label><input id="ownerPhone" name="ownerPhone"></div>
+            <div><label for="ownerEmail">Email <span class="opt">— optional</span></label><input id="ownerEmail" name="ownerEmail" type="email"></div>
+          </div>
+          <div class="check">
+            <input type="checkbox" id="isOwnerBuilder" name="isOwnerBuilder">
+            <label for="isOwnerBuilder">Owner-builder permit — the owner pulls the permit, not a licensed contractor</label>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>Scope of work</h2>
+          <div class="grid">
+            <div style="grid-column:1/-1"><label for="scopeOfWork">Describe the work</label><textarea id="scopeOfWork" name="scopeOfWork"></textarea></div>
+            <div><label for="valuation">Job valuation (USD)</label><input id="valuation" name="valuation" type="number" min="0" step="1"></div>
+            <div><label for="squareFootage">Square footage <span class="opt">— optional</span></label><input id="squareFootage" name="squareFootage" type="number" min="0"></div>
+            <div>
+              <label for="occupancyType">Occupancy</label>
+              <select id="occupancyType" name="occupancyType"><option value="">Select…</option></select>
+            </div>
+          </div>
+          <div class="check">
+            <input type="checkbox" id="isNewConstruction" name="isNewConstruction">
+            <label for="isNewConstruction">New construction</label>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>Florida requirements</h2>
+          <p class="hint" id="hvhzHint">Wind, flood and Notice of Commencement details. HVHZ is determined from the county — you do not set it.</p>
+          <div class="grid">
+            <div><label for="designWindSpeedMph">Design wind speed (mph) <span class="opt">— optional</span></label><input id="designWindSpeedMph" name="designWindSpeedMph" type="number" min="90" max="220"></div>
+            <div>
+              <label for="windExposure">Wind exposure <span class="opt">— optional</span></label>
+              <select id="windExposure" name="windExposure"><option value="">Select…</option></select>
+            </div>
+            <div><label for="floodZone">FEMA flood zone <span class="opt">— optional</span></label><input id="floodZone" name="floodZone" placeholder="e.g. AE, X"></div>
+          </div>
+          <div class="check">
+            <input type="checkbox" id="isSubstantialImprovement" name="isSubstantialImprovement">
+            <label for="isSubstantialImprovement">Substantial improvement (FEMA 50% rule)</label>
+          </div>
+          <div class="check">
+            <input type="checkbox" id="nocRecorded" name="nocRecorded">
+            <label for="nocRecorded">Notice of Commencement has been recorded</label>
+          </div>
+          <div class="grid">
+            <div><label for="nocBook">NOC book <span class="opt">— optional</span></label><input id="nocBook" name="nocBook"></div>
+            <div><label for="nocPage">NOC page <span class="opt">— optional</span></label><input id="nocPage" name="nocPage"></div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>Contact</h2>
+          <div class="grid">
+            <div><label for="contactName">Name</label><input id="contactName" name="contactName"></div>
+            <div><label for="contactPhone">Phone</label><input id="contactPhone" name="contactPhone"></div>
+            <div><label for="contactEmail">Email</label><input id="contactEmail" name="contactEmail" type="email"></div>
+            <div><label for="requestedStartDate">Requested start <span class="opt">— optional</span></label><input id="requestedStartDate" name="requestedStartDate" type="date"></div>
+          </div>
+        </section>
+
+        <div class="row" style="margin-bottom:24px">
+          <button type="button" id="saveBtn">Save draft</button>
+          <button type="button" id="submitBtn" class="ghost" disabled>Submit application</button>
+          <span class="status" id="saveStatus"></span>
+        </div>
+      </form>
+    </div>
+
+    <!-- Live checklist, computed by the API. -->
+    <aside class="sticky">
+      <section class="card">
+        <h2>Completeness</h2>
+        <p class="hint" id="readySummary">Save a draft to see what this jurisdiction needs.</p>
+        <ul class="issues" id="issueList"></ul>
+      </section>
+      <section class="card">
+        <h2>Required documents</h2>
+        <p class="hint">Updates as you change the answers above.</p>
+        <div id="docList"><p class="status">Nothing yet.</p></div>
+      </section>
+    </aside>
+  </div>
+</div>
+
+<script>
+(() => {
+  'use strict';
+
+  const $ = (id) => document.getElementById(id);
+  const store = {
+    get: (k, d = '') => { try { return localStorage.getItem(k) ?? d; } catch { return d; } },
+    set: (k, v) => { try { localStorage.setItem(k, v); } catch { /* private mode */ } },
+  };
+
+  let token = '';
+  let applicationId = null;
+
+  for (const k of ['apiUrl', 'sbUrl', 'sbKey']) $(k).value = store.get('ocs.' + k);
+  for (const k of ['apiUrl', 'sbUrl', 'sbKey']) {
+    $(k).addEventListener('change', () => store.set('ocs.' + k, $(k).value.trim()));
+  }
+
+  const api = () => $('apiUrl').value.trim().replace(/\/$/, '');
+
+  function banner(message, kind = 'info') {
+    const el = $('banner');
+    el.textContent = message;
+    el.className = 'banner ' + kind;
+    el.classList.remove('hidden');
+    if (kind === 'ok') setTimeout(() => el.classList.add('hidden'), 4000);
+  }
+
+  async function call(path, options = {}) {
+    const res = await fetch(api() + path, {
+      ...options,
+      headers: {
+        'content-type': 'application/json',
+        ...(token ? { authorization: 'Bearer ' + token } : {}),
+        ...(options.headers || {}),
+      },
+    });
+    const text = await res.text();
+    let body = null;
+    try { body = text ? JSON.parse(text) : null; } catch { body = { raw: text }; }
+    if (!res.ok) {
+      const err = new Error(body?.message || ('Request failed (' + res.status + ')'));
+      err.body = body;
+      err.status = res.status;
+      throw err;
+    }
+    return body;
+  }
+
+  // --- Sign in -------------------------------------------------------------
+  // Talks to Supabase's auth endpoint directly with the anon key. No SDK, so
+  // this page has no dependencies and nothing to keep up to date.
+  $('loginBtn').addEventListener('click', async () => {
+    const sbUrl = $('sbUrl').value.trim().replace(/\/$/, '');
+    const sbKey = $('sbKey').value.trim();
+    if (!sbUrl || !sbKey) return banner('Enter your Supabase URL and anon key first.', 'err');
+
+    try {
+      const res = await fetch(sbUrl + '/auth/v1/token?grant_type=password', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', apikey: sbKey },
+        body: JSON.stringify({ email: $('email').value.trim(), password: $('password').value }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error_description || data.msg || 'Sign-in failed');
+
+      token = data.access_token;
+      $('authStatus').textContent = 'Signed in';
+      $('password').value = '';
+      banner('Signed in.', 'ok');
+      await loadReference();
+    } catch (err) {
+      banner(err.message, 'err');
+    }
+  });
+
+  // --- Reference data ------------------------------------------------------
+  // Options come from the API so the form and the validation rules can never
+  // disagree about what is allowed.
+  async function loadReference() {
+    try {
+      const schema = await call('/v1/permit-intake/form-schema');
+
+      fill($('permitType'), schema.permitTypes);
+      fill($('occupancyType'), schema.occupancyTypes, true);
+      fill($('windExposure'), schema.windExposureCategories, true);
+
+      $('hvhzHint').textContent =
+        'Notice of Commencement is required above $' +
+        schema.rules.nocThresholdDollars.toLocaleString() +
+        ' (' + schema.rules.nocStatute + '). ' + schema.rules.hvhzNote;
+
+      const munis = await call('/v1/municipalities');
+      const select = $('municipalityId');
+      select.innerHTML = '<option value="">Select…</option>';
+      for (const m of munis.data) {
+        const opt = document.createElement('option');
+        opt.value = m.id;
+        opt.textContent = m.name + ' (' + m.kind + ')';
+        opt.dataset.county = m.county || (m.kind === 'county' ? m.name : '');
+        select.appendChild(opt);
+      }
+    } catch (err) {
+      banner('Could not load form options: ' + err.message, 'err');
+    }
+  }
+
+  function fill(select, items, blank = false) {
+    select.innerHTML = blank ? '<option value="">Select…</option>' : '';
+    for (const item of items) {
+      const opt = document.createElement('option');
+      opt.value = item.value;
+      opt.textContent = item.label;
+      select.appendChild(opt);
+    }
+  }
+
+  // Auto-fill county from the chosen jurisdiction: it drives the HVHZ rule, and
+  // asking someone to retype it invites a mismatch.
+  $('municipalityId').addEventListener('change', (e) => {
+    const county = e.target.selectedOptions[0]?.dataset.county;
+    if (county && !$('siteCounty').value) $('siteCounty').value = county;
+  });
+
+  // --- Collect + save ------------------------------------------------------
+  function collect() {
+    const payload = {};
+    const text = ['permitType','municipalityId','siteAddressLine1','siteCity','siteCounty',
+      'sitePostalCode','parcelNumber','subdivision','lot','block','ownerName','ownerPhone',
+      'ownerEmail','scopeOfWork','occupancyType','windExposure','floodZone','nocBook','nocPage',
+      'contactName','contactPhone','contactEmail','requestedStartDate'];
+    const nums = ['valuation','squareFootage','designWindSpeedMph'];
+    const bools = ['isOwnerBuilder','isNewConstruction','isSubstantialImprovement','nocRecorded'];
+
+    for (const k of text) { const v = $(k).value.trim(); if (v) payload[k] = v; }
+    for (const k of nums) { const v = $(k).value; if (v !== '') payload[k] = Number(v); }
+    for (const k of bools) payload[k] = $(k).checked;
+    return payload;
+  }
+
+  async function save() {
+    if (!token) return banner('Sign in first.', 'err');
+    const payload = collect();
+    if (!payload.permitType) return banner('Choose a permit type.', 'err');
+
+    $('saveStatus').textContent = 'Saving…';
+    try {
+      const result = applicationId
+        ? await call('/v1/permit-applications/' + applicationId, { method: 'PATCH', body: JSON.stringify(payload) })
+        : await call('/v1/permit-applications', { method: 'POST', body: JSON.stringify(payload) });
+
+      applicationId = result.id;
+      render(result);
+      $('saveStatus').textContent = 'Saved — application #' + result.application_number;
+    } catch (err) {
+      $('saveStatus').textContent = '';
+      banner(err.message, 'err');
+    }
+  }
+
+  function render(app) {
+    // in_hvhz is server-derived. Showing it here tells the contractor WHY the
+    // checklist changed when they entered a Broward address.
+    if (app.in_hvhz) {
+      banner('This address is in the High Velocity Hurricane Zone — a Miami-Dade NOA is required.', 'info');
+    }
+
+    const list = $('issueList');
+    list.innerHTML = '';
+    const r = app.readiness;
+
+    $('readySummary').textContent = r.canSubmit
+      ? 'Ready to submit.' + (r.warningCount ? ' ' + r.warningCount + ' suggestion(s).' : '')
+      : r.blockingCount + ' item(s) must be resolved before submitting.';
+
+    if (r.canSubmit && !r.issues.length) {
+      const li = document.createElement('li');
+      li.className = 'done';
+      li.textContent = 'Everything required is present.';
+      list.appendChild(li);
+    }
+
+    for (const issue of r.issues) {
+      const li = document.createElement('li');
+      li.className = issue.severity;
+      li.textContent = issue.message;
+      list.appendChild(li);
+    }
+
+    const docs = $('docList');
+    docs.innerHTML = '';
+    if (!app.documents.length) {
+      docs.innerHTML = '<p class="status">No documents required yet.</p>';
+    }
+    for (const doc of app.documents) {
+      const row = document.createElement('div');
+      row.className = 'doc';
+      const label = document.createElement('span');
+      label.textContent = doc.label;
+      if (doc.notes) label.title = doc.notes;
+      const pill = document.createElement('span');
+      pill.className = 'pill ' + (doc.status === 'missing' ? 'missing' : 'provided');
+      pill.textContent = doc.status;
+      row.append(label, pill);
+      docs.appendChild(row);
+    }
+
+    $('submitBtn').disabled = !r.canSubmit;
+  }
+
+  $('saveBtn').addEventListener('click', save);
+
+  $('submitBtn').addEventListener('click', async () => {
+    if (!applicationId) return;
+    try {
+      await call('/v1/permit-applications/' + applicationId + '/submit', { method: 'POST' });
+      banner('Application submitted.', 'ok');
+      $('submitBtn').disabled = true;
+    } catch (err) {
+      // The server re-checks completeness at submit time, so this can fail even
+      // when the button looked enabled — show exactly what it objected to.
+      const issues = err.body?.details?.issues;
+      banner(issues ? issues.map((i) => i.message).join(' · ') : err.message, 'err');
+    }
+  });
+
+  // Re-save on change once a draft exists, so the checklist tracks the answers.
+  let timer;
+  $('form').addEventListener('change', () => {
+    if (!applicationId) return;
+    clearTimeout(timer);
+    timer = setTimeout(save, 600);
+  });
+})();
+</script>
+</body>
+</html>

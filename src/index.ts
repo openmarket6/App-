@@ -20,6 +20,7 @@ import { healthRoutes } from './routes/health.js';
 import { meRoutes } from './routes/me.js';
 import { projectRoutes } from './routes/projects.js';
 import { permitRoutes } from './routes/permits.js';
+import { permitApplicationRoutes } from './routes/permitApplications.js';
 import { draftingRoutes } from './routes/drafting.js';
 import { documentRoutes } from './routes/documents.js';
 import { complianceRoutes } from './routes/compliance.js';
@@ -27,6 +28,7 @@ import { messageRoutes } from './routes/messages.js';
 import { paymentRoutes } from './routes/payments.js';
 import { webhookRoutes } from './routes/webhooks.js';
 import { adminRoutes } from './routes/admin.js';
+import { municipalIntegrationRoutes } from './routes/municipalIntegration.js';
 
 export async function buildServer() {
   const app = Fastify({
@@ -164,6 +166,7 @@ export async function buildServer() {
   await app.register(meRoutes);
   await app.register(projectRoutes);
   await app.register(permitRoutes);
+  await app.register(permitApplicationRoutes);
   await app.register(draftingRoutes);
   await app.register(documentRoutes);
   await app.register(complianceRoutes);
@@ -171,6 +174,7 @@ export async function buildServer() {
   await app.register(paymentRoutes);
   await app.register(webhookRoutes);
   await app.register(adminRoutes);
+  await app.register(municipalIntegrationRoutes);
 
   return app;
 }
