@@ -149,8 +149,8 @@ You now have three connection strings — the same URL, three different username
 
 1. Go to **render.com** → **Get Started** → sign in with GitHub.
 2. **New** → **Blueprint** → select **openmarket6/App-** → **Connect**.
-3. Render reads `render.yaml` and finds two services: `ocs-api` and
-   `ocs-worker`. It will ask you for each secret value.
+3. Render reads `render.yaml` and finds two services: `one-contractor-solutions` and
+   `one-contractor-worker`. It will ask you for each secret value.
 
 Fill in:
 
@@ -171,17 +171,17 @@ Fill in:
 
 4. Click **Apply**. It takes about five minutes.
 
-5. When it finishes, copy your API URL from the top of the `ocs-api` page
+5. When it finishes, copy your API URL from the top of the `one-contractor-solutions` page
    (something like `https://ocs-api.onrender.com`). Go to **Environment**, set
    `API_BASE_URL` to it, and save.
 
-6. **Copy `INTEGRATION_ENCRYPTION_KEY` from `ocs-api` into `ocs-worker`.**
+6. **Copy `INTEGRATION_ENCRYPTION_KEY` from `one-contractor-solutions` into `one-contractor-worker`.**
    Render generates it for the API; the worker needs the identical value or
    stored portal passwords cannot be read back.
 
 ### Check it worked
 
-Visit `https://YOUR-API-URL.onrender.com/readyz`. You want:
+Visit `https://one-contractor-solutions.onrender.com/readyz`. You want:
 
 ```json
 {"status":"ready","checks":{"database":"ok","database_service_role":"ok"}}
@@ -201,8 +201,8 @@ almost always the pooler (must be **Session**) or a password typo.
 **Visit your Render URL.** Your existing 1 Contractor Solutions application is
 served there:
 
-- `https://YOUR-API-URL.onrender.com/` — the app
-- `https://YOUR-API-URL.onrender.com/intake` — the standalone permit intake form
+- `https://one-contractor-solutions.onrender.com/` — the app
+- `https://one-contractor-solutions.onrender.com/intake` — the standalone permit intake form
 
 The very first visit shows a **first-run setup form**, because the system has no
 administrator yet. Enter your email, your name, and a password of at least 12
@@ -252,7 +252,7 @@ Netlify and set `CORS_ALLOWED_ORIGINS` on Render to that site's URL.
 
 1. **stripe.com** → Developers → **API keys** → copy the **Secret key**.
 2. Developers → **Webhooks** → **Add endpoint**
-   - URL: `https://YOUR-API-URL.onrender.com/v1/webhooks/stripe`
+   - URL: `https://one-contractor-solutions.onrender.com/v1/webhooks/stripe`
    - Events: `payment_intent.succeeded`, `payment_intent.payment_failed`,
      `payment_intent.processing`, `payment_intent.canceled`, `charge.refunded`
 3. Copy the **Signing secret** (starts `whsec_`).
@@ -273,7 +273,7 @@ the built-in portal. It needs two changes:
 2. Call the new API instead of `/api/*`.
 
 ```js
-const API = 'https://YOUR-API-URL.onrender.com';
+const API = 'https://one-contractor-solutions.onrender.com';
 
 const { data: { session } } = await supabase.auth.getSession();
 

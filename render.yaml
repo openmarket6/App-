@@ -1,12 +1,12 @@
 # Render Blueprint for One Contractor Solutions.
 #
 # Two services from one repository:
-#   ocs-api     -- the HTTP API *and* the frontend. It serves the contractor
+#   one-contractor-solutions -- the HTTP API *and* the frontend. It serves the contractor
 #                  portal at / and the permit intake form at /intake, so the
 #                  whole product is one deployment on one domain: no CORS to
 #                  configure, and the UI can never be a different version from
 #                  the API it talks to.
-#   ocs-worker  -- background jobs: municipal status checks, expiry reminders,
+#   one-contractor-worker    -- background jobs: municipal status checks, expiry reminders,
 #                  notification delivery, webhook processing
 #
 # The worker is a SEPARATE service, not a thread inside the API, so a slow
@@ -20,7 +20,7 @@
 
 services:
   - type: web
-    name: ocs-api
+    name: one-contractor-solutions
     runtime: node
     plan: starter
     region: ohio
@@ -113,7 +113,7 @@ services:
         value: 300
 
   - type: worker
-    name: ocs-worker
+    name: one-contractor-worker
     runtime: node
     plan: starter
     region: ohio
