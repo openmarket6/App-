@@ -386,7 +386,13 @@ requirements of a job already under way.
 
 ## Frontend
 
-**The frontend is served by the API itself.** One deployment, one origin:
+**Deployment: Netlify serves the frontend, Render runs the API and the worker.**
+`netlify.toml` proxies `/api/*` to Render as a `status = 200` rewrite, keeping
+everything same-origin — which the `SameSite=Strict` refresh cookie requires,
+and which removes CORS entirely. The background worker is why the backend is not
+on Netlify: it runs continuously, and Netlify Functions are short-lived.
+
+The API also serves the frontend itself, so the Render URL works standalone:
 `/` is the portal, `/intake` is the standalone intake form, `/v1/*` is the API.
 That removes CORS from the picture entirely and makes it impossible for the UI
 and the API to be different versions of each other. Unknown non-API paths fall

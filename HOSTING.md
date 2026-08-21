@@ -20,11 +20,24 @@ three pieces, each doing one job:
 | **Worker** | Scheduled checks, emails | Render — new | Free, then $7/mo |
 | **Database + files + logins** | Where everything is stored | Supabase — new | Free, then $25/mo |
 
-**The frontend ships inside the backend.** The Render service serves the
-contractor portal at `/` and the permit intake form at `/intake`, so there is
-one deployment on one domain. That removes the two things most likely to break
-a split setup: CORS configuration, and a frontend running against an API it no
-longer matches. Your existing Netlify site keeps working and is untouched.
+**Netlify serves the frontend; Render runs the backend.**
+
+`netlify.toml` proxies `/api/*` from Netlify through to Render with
+`status = 200`, which makes it a proxy rather than a redirect: the browser
+believes it is talking to the Netlify origin the entire time.
+
+That is not cosmetic. The refresh-token cookie is `SameSite=Strict`, and a
+strict cookie is not sent on cross-site requests. If the frontend called Render
+directly the browser would silently refuse to send it, every access token would
+expire after fifteen minutes with no way to refresh, and people would be logged
+out mid-task with nothing explaining why. Proxying keeps it same-origin, so the
+cookie works and CORS never enters the picture.
+
+Render still serves its own copy of the frontend, so the Render URL keeps
+working as a fallback.
+
+> **If the Render URL ever changes, edit `netlify.toml`.** Netlify does not
+> expand environment variables inside that file, so the address is written out.
 
 **Why split it up?** Right now everything runs inside one Netlify Function.
 That function has no real database, so data does not reliably persist, and it

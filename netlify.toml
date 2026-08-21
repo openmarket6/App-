@@ -1,0 +1,94 @@
+# Netlify configuration — frontend only.
+#
+# ARCHITECTURE
+#   Netlify  serves the React application (this file publishes `public/`)
+#   Render   runs the API and the background worker
+#
+# The background worker is why the backend is not here. It runs continuously,
+# watching a job queue for permit status checks, licence-expiry reminders and
+# notification delivery. Netlify Functions are short-lived by design, so there
+# is nowhere for a process like that to live — which is exactly why those
+# scheduled checks never fired in the previous all-Netlify build.
+
+[build]
+  publish = "public"
+  # Nothing to compile: the React bundle in public/assets is already built, and
+  # the TypeScript in src/ is the backend, which Render builds. An empty command
+  # keeps Netlify from trying to build a server it will never run.
+  command = ""
+
+# -----------------------------------------------------------------------------
+# THE IMPORTANT PART: proxy /api/* to Render.
+#
+# `status = 200` makes this a PROXY, not a redirect. The browser believes it is
+# talking to the Netlify origin the whole time, and never learns the API lives
+# somewhere else.
+#
+# That is not a convenience — it is required for sign-in to work at all:
+#
+#   The refresh-token cookie is set httpOnly with SameSite=Strict. A strict
+#   cookie is NOT sent on cross-site requests, so if the frontend called Render
+#   directly the browser would silently refuse to send it. Every access token
+#   would expire after fifteen minutes and never refresh, and people would be
+#   logged out mid-task with no error to explain why.
+#
+#   Proxying keeps everything same-origin, so the cookie is set on this domain
+#   and sent back normally. It also removes CORS from the picture entirely.
+#
+# ORDER MATTERS: Netlify applies redirects top to bottom, so this must sit above
+# the single-page-app fallback below. Otherwise /api/* would be answered with
+# index.html and every API call would receive a page of HTML.
+#
+# ⚠️ CHANGE THIS if the Render service URL ever changes. Netlify does not expand
+#    environment variables inside netlify.toml, so it has to be written out.
+# -----------------------------------------------------------------------------
+[[redirects]]
+  from = "/api/*"
+  to = "https://app-1contractorsolution.onrender.com/api/:splat"
+  status = 200
+  force = true
+
+# Health checks, so the backend can be verified from this domain too.
+[[redirects]]
+  from = "/readyz"
+  to = "https://app-1contractorsolution.onrender.com/readyz"
+  status = 200
+  force = true
+
+# Single-page-app fallback. The React router owns the URL, so any path that is
+# not a real file returns index.html and the app renders the right screen.
+# Must be LAST.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+# -----------------------------------------------------------------------------
+# Security headers.
+#
+# Carried over from the previous deployment, which had these right.
+# geolocation and camera are granted to `self` deliberately: site supervisors
+# check in with GPS and photograph the work from their phones, and without
+# these the browser blocks both.
+# -----------------------------------------------------------------------------
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "geolocation=(self), camera=(self)"
+
+# Hashed asset filenames change whenever the content changes, so they are safe
+# to cache indefinitely.
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# The shell must never be cached: a stale index.html pointing at asset hashes
+# that no longer exist is the classic white-screen-after-deploy.
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "no-cache, must-revalidate"
