@@ -12,6 +12,7 @@
  * Keeping them separate is what stops a bug in a route handler from reaching
  * another customer's rows. Route code must never import servicePool.
  */
+import { existsSync, readFileSync } from 'node:fs';
 import pg from 'pg';
 import { env } from '../config/env.js';
 import { logger } from '../lib/logger.js';
@@ -41,7 +42,29 @@ function createPool(connectionString: string, name: string): pg.Pool {
     application_name: `ocs-${name}`,
     ...(connectionString.includes('localhost') || connectionString.includes('127.0.0.1')
       ? {}
-      : { ssl: { rejectUnauthorized: true } }),
+      : {
+          ssl: (() => {
+            // Supabase signs with its own root, which Node does not bundle. The
+            // certificate is public, so the PEM itself can travel in an env var --
+            // that is the one channel guaranteed to be present in every phase of a
+            // deploy, including pre-deploy, where a mounted secret file may not be.
+            const inline = process.env.DATABASE_CA_CERT;
+            if (inline && inline.includes('BEGIN CERTIFICATE')) {
+              return { ca: inline.replace(/\\n/g, '\n'), rejectUnauthorized: true };
+            }
+            const caPath = process.env.DATABASE_CA_CERT_PATH ?? process.env.NODE_EXTRA_CA_CERTS;
+            if (caPath && existsSync(caPath)) {
+              return { ca: readFileSync(caPath, 'utf8'), rejectUnauthorized: true };
+            }
+            // Say which roots were tried rather than leaving the caller with a bare
+            // "self-signed certificate in certificate chain" and nothing to go on.
+            console.warn(
+              `no database CA supplied (DATABASE_CA_CERT unset, path=${caPath ?? 'unset'}); ` +
+                'TLS verification will use only the roots Node ships with',
+            );
+            return { rejectUnauthorized: true };
+          })(),
+        }),
   });
 
   // An idle client erroring is normal (network blip, server restart). Log it
