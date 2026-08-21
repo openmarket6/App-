@@ -1,0 +1,137 @@
+# Render Blueprint for One Contractor Solutions.
+#
+# Two services from one repository:
+#   ocs-api     -- the HTTP API (this is what the Netlify frontend calls)
+#   ocs-worker  -- background jobs: municipal status checks, expiry reminders,
+#                  notification delivery, webhook processing
+#
+# The worker is a SEPARATE service, not a thread inside the API, so a slow
+# municipal portal cannot compete with page loads, and either can be restarted
+# or scaled without disturbing the other.
+#
+# Every secret below is `sync: false`, meaning Render prompts for it and stores
+# it encrypted. No credential belongs in this file or anywhere else in git.
+#
+# Postgres and file storage live in Supabase, not here.
+
+services:
+  - type: web
+    name: ocs-api
+    runtime: node
+    plan: starter
+    region: ohio
+    branch: main
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+
+    # Render polls this and pulls the instance out of rotation if it fails,
+    # rather than killing the container the way a failing /healthz would.
+    healthCheckPath: /readyz
+
+    # Migrations run once per deploy, before the new instance takes traffic.
+    # (Paid plans only. On the free plan, use:
+    #    startCommand: npm run migrate && npm start
+    #  -- the advisory lock in the migration runner makes concurrent boots safe.)
+    preDeployCommand: npm run migrate
+
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 8080
+      - key: LOG_LEVEL
+        value: info
+
+      # --- URLs -------------------------------------------------------------
+      - key: API_BASE_URL
+        sync: false          # https://ocs-api.onrender.com (or your domain)
+      - key: APP_BASE_URL
+        sync: false          # https://one-contractor-solutions.netlify.app
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false          # exact frontend origins, comma-separated. Never "*"
+
+      # --- Database ---------------------------------------------------------
+      # Three Supabase connection strings, differing only in the role:
+      #   DATABASE_URL           -> ocs_app      (request handling, one tenant)
+      #   DATABASE_SERVICE_URL   -> ocs_service  (background work, cross-tenant)
+      #   DATABASE_MIGRATION_URL -> postgres     (owner; DDL only)
+      # Use the SESSION pooler (port 5432), not the transaction pooler:
+      # tenant isolation relies on SET LOCAL inside a transaction, and the
+      # transaction pooler can hand the statements to different backends.
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_SERVICE_URL
+        sync: false
+      - key: DATABASE_MIGRATION_URL
+        sync: false
+
+      # --- Supabase auth + storage -----------------------------------------
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false          # secret: signs storage URLs. Never sent to a browser.
+      - key: SUPABASE_STORAGE_BUCKET
+        value: ocs-documents
+
+      # --- Payments ---------------------------------------------------------
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+
+      # --- Email (optional) -------------------------------------------------
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
+
+      # --- Security ---------------------------------------------------------
+      - key: INTEGRATION_ENCRYPTION_KEY
+        generateValue: true  # Render generates and stores it; never seen in git
+      - key: RATE_LIMIT_MAX
+        value: 300
+
+  - type: worker
+    name: ocs-worker
+    runtime: node
+    plan: starter
+    region: ohio
+    branch: main
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start:worker
+
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: info
+      - key: WORKER_ENABLED
+        value: true
+      - key: WORKER_CONCURRENCY
+        value: 4
+
+      # The worker does not run migrations -- the API's pre-deploy step owns
+      # that, so there is exactly one migrating process per deploy.
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_SERVICE_URL
+        sync: false
+
+      - key: APP_BASE_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET
+        value: ocs-documents
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
+      - key: INTEGRATION_ENCRYPTION_KEY
+        sync: false          # must match the API's value exactly
