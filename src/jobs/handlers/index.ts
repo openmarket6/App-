@@ -10,6 +10,7 @@ import { register as registerCompliance } from './compliance.js';
 import { register as registerNotifications } from './notifications.js';
 import { register as registerSystem } from './system.js';
 import { register as registerPayments } from './payments.js';
+import { register as registerSupervision } from './supervision.js';
 
 let registered = false;
 
@@ -20,5 +21,6 @@ export function registerAllHandlers(): void {
   registerNotifications();
   registerSystem();
   registerPayments();
+  registerSupervision();
   registered = true;
 }

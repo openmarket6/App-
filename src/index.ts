@@ -29,6 +29,7 @@ import { paymentRoutes } from './routes/payments.js';
 import { webhookRoutes } from './routes/webhooks.js';
 import { adminRoutes } from './routes/admin.js';
 import { municipalIntegrationRoutes } from './routes/municipalIntegration.js';
+import { supervisionRoutes } from './routes/supervision.js';
 
 export async function buildServer() {
   const app = Fastify({
@@ -175,6 +176,7 @@ export async function buildServer() {
   await app.register(webhookRoutes);
   await app.register(adminRoutes);
   await app.register(municipalIntegrationRoutes);
+  await app.register(supervisionRoutes);
 
   return app;
 }

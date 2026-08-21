@@ -231,6 +231,7 @@ All routes are under `/v1`. Authentication is `Authorization: Bearer <token>`.
 | Projects | `GET/POST /projects`, `GET/PATCH/DELETE /projects/:id` |
 | Permits | `GET/POST /permits`, `GET/PATCH/DELETE /permits/:id`, `POST /permits/:id/status`, `GET /municipalities` |
 | Permit intake | `GET /permit-intake/form-schema`, `GET/POST /permit-applications`, `GET/PATCH /permit-applications/:id`, `POST .../submit`, `POST .../review`, `POST .../convert`, subcontractors, document links |
+| White-glove supervision | `GET /trades`, `GET /supervision/catalogue`, `GET/POST /supervision/engagements`, `GET /supervision/engagements/:id`, `POST .../accept-terms`, `POST .../activate`, `POST .../complete`, `POST /supervision/visits/:id/schedule`, `POST .../check-in`, `POST .../sign-off`, `POST .../waive`, `GET /supervision/my-visits`, incidents, admin licenses/supervisors/availability |
 | Municipal integration | `GET /admin/integrations/coverage`, `GET /admin/integrations/platforms`, `PATCH /admin/municipalities/:id/integration`, `POST .../test-connection`, `POST .../verify`, `PUT /municipalities/:id/credentials` |
 | Drafting | `GET/POST /drafting-orders`, `GET /drafting-orders/:id`, `POST /drafting-orders/:id/assign`, `POST /drafting-orders/:id/revisions`, `POST .../revisions/:id/decision`, markups |
 | Documents | `GET /documents`, `POST /documents/upload-init`, `POST /documents/:id/versions/:vid/complete`, `GET /documents/:id/download`, `DELETE`/`restore`, `GET/POST /folders` |
@@ -328,6 +329,69 @@ is configured but never verified.
 
 ---
 
+## White-glove qualifying & on-site supervision
+
+One Contractor Solutions holds licenses across Florida trades. A contractor
+without a license in a trade engages OCS to pull the permit under an OCS
+qualifier, and OCS puts a supervisor on site.
+
+**This subsystem is an evidence system, not a scheduling system.** In Florida a
+qualifier who lets their license be used on work they do not actually supervise
+is committing an offence, not a paperwork error (Fla. Stat. 489.129, 489.127 on
+aiding unlicensed activity). What separates a legitimate qualifying service from
+"renting a license" is whether supervision really happened and can be proven
+afterwards. Every table in `0012_supervision.sql` exists to answer, months later
+and to someone hostile: who qualified this, who supervised it, which visits were
+required, did they happen, and was the supervisor actually there.
+
+The database refuses to record states it cannot stand behind:
+
+| Rule | Enforced by |
+|---|---|
+| Cannot qualify work under an expired license | `check_engagement_compliance` trigger |
+| Cannot qualify a trade the license doesn't cover | same trigger |
+| Cannot activate without an assigned supervisor and license | CHECK + trigger |
+| Cannot activate before the contractor accepts terms | CHECK constraint |
+| Qualifier and supervisor caseload caps | trigger — an unbounded caseload makes "real supervisory control" indefensible |
+| Cannot complete with mandatory visits outstanding | `check_engagement_completion` trigger |
+| A visit isn't "completed" without a check-in **and** a sign-off | CHECK constraint |
+| Waiving a required visit needs a reason, and is audited | CHECK + audit log |
+
+Check-in records GPS coordinates and the computed distance from the job site
+(`src/domain/geo.ts`). A check-in outside the 250 m radius is **accepted but
+flagged**, not rejected — phone GPS is unreliable beside steel framing, and
+blocking honest supervisors would push them off the app, leaving no evidence
+trail at all. The distance is always stored, so anomalies stay visible.
+
+23 Florida trades and 63 milestone templates are seeded (footer, slab, framing,
+dry-in, rough-in, top-out, final, and trade-specific ones). Activation copies the
+template rather than referencing it, so editing a template never rewrites the
+requirements of a job already under way.
+
+---
+
+## Frontend
+
+Two self-contained pages in `public/`, each a single file with no build step, no
+framework and no CDN — matching how the current site deploys (drag-and-drop of
+one asset onto Netlify):
+
+- **`portal.html`** — the full contractor portal: dashboard, permit
+  applications with the live Florida checklist, permits, projects, white-glove
+  engagements with the visit evidence trail, compliance, notifications.
+- **`permit-intake.html`** — the intake form on its own, for embedding or
+  standalone use.
+
+Both authenticate with Supabase using the **anon** key and send the resulting
+access token to the API. Styling is driven entirely by CSS custom properties in
+`:root` — change those and the whole thing follows.
+
+> These are deliberately neutral in appearance. The existing live site could not
+> be reached from the environment this was built in (network egress is
+> restricted), so nothing here attempts to imitate its look.
+
+---
+
 ## Background jobs
 
 The worker polls a Postgres-backed queue (`for update skip locked`). Jobs are
@@ -344,6 +408,9 @@ follow-up.
 | `purge-deleted-documents` | 24 hours | Deletes storage past its retention window |
 | `cleanup-idempotency-keys` | 1 hour | Removes expired keys |
 | `payment-reconciliation` | 24 hours | Flags unreconciled payments |
+| `service-license-watch` | 12 hours | OCS's own qualifying licenses nearing expiry; auto-expires lapsed ones |
+| `supervision-visit-watch` | 24 hours | Missed site visits and stalled engagements |
+| `integration-coverage-report` | 24 hours | Jurisdictions configured but never verified |
 
 Failures retry with exponential backoff and jitter. After `max_attempts` a job
 becomes **dead** rather than looping forever, and appears in
@@ -361,7 +428,7 @@ TEST_SERVICE_DATABASE_URL="postgresql://ocs_service:PASSWORD@localhost:5432/ocs_
   npm test
 ```
 
-52 tests. The database ones run against a **real Postgres**, because RLS is a
+65 tests. The database ones run against a **real Postgres**, because RLS is a
 database behaviour — a mock would return whatever the test told it to and prove
 nothing.
 
@@ -375,6 +442,8 @@ nothing.
 - `permit-intake.test.ts` (28) — every Florida rule above, submission readiness,
   adapter status mapping and URL escaping, and the verification gate that keeps
   an unverified jurisdiction from ever running automated checks.
+- `supervision.test.ts` (13) — every compliance gate in the table above, plus
+  site-proximity maths and cross-tenant isolation of supervision records.
 
 Tests skip cleanly when the `TEST_*` variables are unset.
 
@@ -396,6 +465,8 @@ running, but each should be settled before real customer data depends on it.
 | **Email is optional and unconfigured.** | Notifications appear in-app; delivery rows record `failed` with a reason. | Set `RESEND_API_KEY` and `EMAIL_FROM`. |
 | **MFA is enforced only on refunds and membership changes.** | Other sensitive actions accept a password-only session. | Widen `requireMfa()` once TOTP enrolment is rolled out to users. |
 | **No load testing.** | Real concurrency behaviour is unmeasured. | Run a load test against staging before onboarding many contractors. |
+| **The white-glove model needs legal review.** | The rules encoded in `0012_supervision.sql` are a floor, not a compliance opinion. | Have a Florida construction attorney review the qualifying-and-supervision model and the contractor terms text before selling it. |
+| **Frontend does not match the existing site.** | The live site was unreachable from the build environment. | Send the current `index.html` (or connect Netlify to Git) and the portal can be restyled to match. |
 
 ---
 

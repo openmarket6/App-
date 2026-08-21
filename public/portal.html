@@ -1,0 +1,1068 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>One Contractor Solutions — Portal</title>
+<!--
+  Contractor portal.
+
+  One self-contained file: no build step, no framework, no CDN. That matches how
+  the current site is deployed (drag-and-drop of a single asset onto Netlify),
+  so this can replace it without changing anything about how you ship.
+
+  NOTE ON STYLING: this is deliberately neutral. The live site could not be
+  reached from the environment this was written in, so nothing here attempts to
+  imitate its look. Everything visual is driven by the CSS custom properties in
+  :root — change those and the whole portal follows.
+
+  Structure:
+    api()        one place that talks to the backend
+    session      Supabase auth, anon key only, token kept in memory
+    router       hash-based, so it works on any static host with no redirects
+    views        one function per screen, each returning a DOM node
+-->
+<style>
+  :root {
+    --brand:        #1d4ed8;
+    --brand-ink:    #ffffff;
+    --brand-soft:   #eaf0fd;
+
+    --ground:       #f7f8fa;
+    --surface:      #ffffff;
+    --surface-alt:  #f0f2f6;
+    --line:         #dee2ea;
+    --ink:          #171a20;
+    --ink-soft:     #414a58;
+    --muted:        #5f6a79;
+
+    --ok:      #146c43;  --ok-bg:      #e7f4ec;
+    --warn:    #8a5a11;  --warn-bg:    #fdf4e4;
+    --bad:     #a3231b;  --bad-bg:     #fbeceb;
+    --info:    #1d4ed8;  --info-bg:    #eaf0fd;
+
+    --radius: 9px;
+    --shadow: 0 1px 2px rgba(23,26,32,.05), 0 8px 24px -16px rgba(23,26,32,.28);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --brand: #7ba1f0; --brand-ink: #0e1420; --brand-soft: #1a2233;
+      --ground: #14171c; --surface: #1b1f26; --surface-alt: #232830;
+      --line: #2c323b; --ink: #e6e9ee; --ink-soft: #bcc4cf; --muted: #8f98a6;
+      --ok: #6ed49f; --ok-bg: #15281f;
+      --warn: #e2b163; --warn-bg: #2a2318;
+      --bad: #f19289; --bad-bg: #2c1b19;
+      --info: #7ba1f0; --info-bg: #1a2233;
+      --shadow: 0 1px 2px rgba(0,0,0,.35), 0 8px 24px -16px rgba(0,0,0,.7);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--ground); color: var(--ink);
+    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--brand); }
+  h1, h2, h3 { letter-spacing: -.012em; text-wrap: balance; }
+
+  /* ---------- shell ---------- */
+  .topbar {
+    background: var(--surface); border-bottom: 1px solid var(--line);
+    padding: 0 20px; position: sticky; top: 0; z-index: 20;
+    display: flex; align-items: center; gap: 20px; min-height: 58px; flex-wrap: wrap;
+  }
+  .brand { font-weight: 700; font-size: 15.5px; letter-spacing: -.02em; white-space: nowrap; }
+  .brand span { color: var(--brand); }
+  nav.tabs { display: flex; gap: 2px; flex: 1; overflow-x: auto; }
+  nav.tabs a {
+    padding: 8px 12px; border-radius: 7px; text-decoration: none;
+    color: var(--ink-soft); font-size: 14.5px; font-weight: 500; white-space: nowrap;
+  }
+  nav.tabs a:hover { background: var(--surface-alt); color: var(--ink); }
+  nav.tabs a.on { background: var(--brand-soft); color: var(--brand); font-weight: 600; }
+  .who { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 10px; }
+
+  main { max-width: 1160px; margin: 0 auto; padding: 24px 20px 80px; }
+
+  /* ---------- primitives ---------- */
+  .card {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 18px; box-shadow: var(--shadow);
+  }
+  .card + .card { margin-top: 14px; }
+  .card h2 { margin: 0 0 3px; font-size: 17px; }
+  .card .sub { margin: 0 0 16px; color: var(--muted); font-size: 13.5px; }
+
+  .page-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; margin-bottom: 18px; flex-wrap: wrap; }
+  .page-head h1 { margin: 0; font-size: 25px; }
+  .page-head p { margin: 3px 0 0; color: var(--muted); font-size: 14px; }
+
+  button, .btn {
+    font: inherit; font-weight: 600; font-size: 14.5px;
+    padding: 8px 15px; border-radius: 7px; cursor: pointer;
+    border: 1px solid var(--brand); background: var(--brand); color: var(--brand-ink);
+    text-decoration: none; display: inline-flex; align-items: center; gap: 7px;
+  }
+  button.ghost, .btn.ghost { background: var(--surface); color: var(--brand); }
+  button.quiet { background: var(--surface); color: var(--ink-soft); border-color: var(--line); }
+  button.danger { background: var(--bad); border-color: var(--bad); color: #fff; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+    outline: 2px solid var(--brand); outline-offset: 1px;
+  }
+
+  label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; color: var(--ink-soft); }
+  input, select, textarea {
+    width: 100%; padding: 8px 10px; font: inherit; font-size: 14.5px;
+    border: 1px solid var(--line); border-radius: 7px;
+    background: var(--ground); color: var(--ink);
+  }
+  textarea { min-height: 80px; resize: vertical; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+  .row { display: flex; gap: 9px; flex-wrap: wrap; align-items: center; }
+  .spread { display: flex; justify-content: space-between; gap: 12px; align-items: center; flex-wrap: wrap; }
+
+  .pill {
+    font-size: 11.5px; font-weight: 600; padding: 2px 8px; border-radius: 99px;
+    white-space: nowrap; text-transform: capitalize;
+  }
+  .pill.ok { background: var(--ok-bg); color: var(--ok); }
+  .pill.warn { background: var(--warn-bg); color: var(--warn); }
+  .pill.bad { background: var(--bad-bg); color: var(--bad); }
+  .pill.info { background: var(--info-bg); color: var(--info); }
+  .pill.grey { background: var(--surface-alt); color: var(--muted); }
+
+  .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+  th, td { text-align: left; padding: 10px 13px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  th { font-size: 11.5px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); background: var(--surface-alt); white-space: nowrap; }
+  tbody tr.clickable:hover { background: var(--surface-alt); cursor: pointer; }
+  td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .stat { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; }
+  .stat .k { font-size: 11.5px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); }
+  .stat .v { font-size: 27px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.15; margin-top: 2px; }
+  .stat .v.alert { color: var(--bad); }
+
+  .banner { padding: 11px 14px; border-radius: 8px; font-size: 14px; margin-bottom: 14px; border-left: 3px solid; }
+  .banner.err { background: var(--bad-bg); color: var(--bad); border-color: var(--bad); }
+  .banner.ok { background: var(--ok-bg); color: var(--ok); border-color: var(--ok); }
+  .banner.info { background: var(--info-bg); color: var(--info); border-color: var(--info); }
+  .banner.warn { background: var(--warn-bg); color: var(--warn); border-color: var(--warn); }
+
+  .empty { text-align: center; padding: 40px 20px; color: var(--muted); }
+  .empty p { margin: 0 0 14px; }
+  .muted { color: var(--muted); font-size: 13.5px; }
+  .hidden { display: none !important; }
+
+  .checklist { display: flex; flex-direction: column; gap: 7px; }
+  .checkitem { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start;
+    padding: 9px 11px; border-radius: 7px; background: var(--surface-alt); font-size: 14px; }
+  .checkitem .why { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+
+  /* ---------- login ---------- */
+  .login-wrap { min-height: 100vh; display: grid; place-items: center; padding: 24px; }
+  .login { width: 100%; max-width: 430px; }
+  .login h1 { font-size: 24px; margin: 0 0 4px; }
+  .login .sub { color: var(--muted); font-size: 14px; margin: 0 0 22px; }
+  .login .field + .field { margin-top: 12px; }
+  details.setup { margin-top: 18px; font-size: 13.5px; }
+  details.setup summary { cursor: pointer; color: var(--muted); }
+  details.setup .grid { margin-top: 12px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script>
+(() => {
+'use strict';
+
+// ===========================================================================
+// Config & session
+// ===========================================================================
+
+const cfg = {
+  get: (k) => { try { return localStorage.getItem('ocs.' + k) || ''; } catch { return ''; } },
+  set: (k, v) => { try { localStorage.setItem('ocs.' + k, v); } catch { /* private mode */ } },
+};
+
+const session = {
+  token: '',
+  refresh: '',
+  user: null,
+  companies: [],
+  companyId: '',
+  get signedIn() { return Boolean(this.token && this.user); },
+};
+
+const apiBase = () => cfg.get('apiUrl').replace(/\/$/, '');
+
+/**
+ * Every backend call goes through here.
+ *
+ * One place to attach the bearer token and the active company, and one place
+ * that understands the API's error shape — so no view has to reimplement it.
+ */
+async function api(path, { method = 'GET', body, headers = {} } = {}) {
+  if (!apiBase()) throw new Error('No API URL configured.');
+
+  const res = await fetch(apiBase() + path, {
+    method,
+    headers: {
+      'content-type': 'application/json',
+      ...(session.token ? { authorization: 'Bearer ' + session.token } : {}),
+      // Only sent when the user belongs to more than one company; the backend
+      // checks it against their memberships regardless.
+      ...(session.companyId ? { 'x-company-id': session.companyId } : {}),
+      ...headers,
+    },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  });
+
+  const text = await res.text();
+  let payload = null;
+  try { payload = text ? JSON.parse(text) : null; } catch { payload = { raw: text }; }
+
+  if (!res.ok) {
+    const err = new Error(payload?.message || `Request failed (${res.status})`);
+    err.status = res.status;
+    err.payload = payload;
+    throw err;
+  }
+  return payload;
+}
+
+async function signIn(email, password) {
+  const url = cfg.get('sbUrl').replace(/\/$/, '');
+  const key = cfg.get('sbKey');
+  if (!url || !key) throw new Error('Supabase URL and anon key are not configured.');
+
+  const res = await fetch(url + '/auth/v1/token?grant_type=password', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', apikey: key },
+    body: JSON.stringify({ email, password }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error_description || data.msg || 'Sign-in failed');
+
+  session.token = data.access_token;
+  session.refresh = data.refresh_token;
+  await loadMe();
+}
+
+async function loadMe() {
+  const me = await api('/v1/me');
+  session.user = me.user;
+  session.companies = me.companies || [];
+  session.companyId = me.activeCompanyId || (session.companies[0]?.id ?? '');
+  session.role = me.activeCompanyRole;
+}
+
+function signOut() {
+  session.token = ''; session.user = null; session.companies = []; session.companyId = '';
+  location.hash = '';
+  render();
+}
+
+// ===========================================================================
+// DOM helpers
+// ===========================================================================
+
+function el(tag, props = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (v === null || v === undefined || v === false) continue;
+    if (k === 'class') node.className = v;
+    else if (k === 'html') node.innerHTML = v;
+    else if (k.startsWith('on')) node.addEventListener(k.slice(2).toLowerCase(), v);
+    else if (k === 'value') node.value = v;
+    else node.setAttribute(k, v === true ? '' : String(v));
+  }
+  for (const child of children.flat()) {
+    if (child === null || child === undefined || child === false) continue;
+    node.append(child instanceof Node ? child : document.createTextNode(String(child)));
+  }
+  return node;
+}
+
+const money = (cents) =>
+  cents === null || cents === undefined ? '—'
+    : '$' + (Number(cents) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+const date = (v) => (v ? new Date(v).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—');
+const dateTime = (v) => (v ? new Date(v).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '—');
+const titleCase = (s) => String(s || '').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+
+/** Map a status onto a colour band. Keeps state readable at a glance. */
+function statusPill(status) {
+  const s = String(status || '').toLowerCase();
+  let kind = 'grey';
+  if (['active', 'issued', 'approved', 'completed', 'paid', 'accepted', 'succeeded', 'clean'].includes(s)) kind = 'ok';
+  else if (['corrections_required', 'rejected', 'expired', 'terminated', 'failed', 'missed', 'stop_work'].includes(s)) kind = 'bad';
+  else if (['expiring_soon', 'on_hold', 'info_requested', 'pending', 'draft', 'requested', 'in_progress'].includes(s)) kind = 'warn';
+  else if (['submitted', 'under_review', 'in_review', 'scheduled', 'quoted'].includes(s)) kind = 'info';
+  return el('span', { class: 'pill ' + kind }, titleCase(s));
+}
+
+function banner(kind, text) { return el('div', { class: 'banner ' + kind }, text); }
+
+function emptyState(message, actionLabel, onAction) {
+  return el('div', { class: 'empty' },
+    el('p', {}, message),
+    actionLabel ? el('button', { onclick: onAction }, actionLabel) : null,
+  );
+}
+
+function field(label, input) { return el('div', { class: 'field' }, el('label', {}, label), input); }
+
+// ===========================================================================
+// Views
+// ===========================================================================
+
+const views = {};
+
+views.dashboard = async () => {
+  const wrap = el('div', {});
+  wrap.append(el('div', { class: 'page-head' },
+    el('div', {},
+      el('h1', {}, 'Dashboard'),
+      el('p', {}, session.companies.find((c) => c.id === session.companyId)?.name || ''),
+    ),
+  ));
+
+  const [permits, applications, compliance, engagements] = await Promise.all([
+    api('/v1/permits?limit=100').catch(() => ({ data: [] })),
+    api('/v1/permit-applications?limit=100').catch(() => ({ data: [] })),
+    api('/v1/compliance/summary').catch(() => ({ counts: {} })),
+    api('/v1/supervision/engagements?limit=100').catch(() => ({ data: [] })),
+  ]);
+
+  const openPermits = permits.data.filter((p) => !['closed', 'expired', 'withdrawn', 'rejected'].includes(p.status));
+  const corrections = permits.data.filter((p) => p.status === 'corrections_required');
+  const draftApps = applications.data.filter((a) => ['draft', 'info_requested'].includes(a.status));
+  const activeEng = engagements.data.filter((e) => e.status === 'active');
+
+  wrap.append(el('div', { class: 'stats' },
+    stat('Open permits', openPermits.length),
+    stat('Need corrections', corrections.length, corrections.length > 0),
+    stat('Applications in progress', draftApps.length),
+    stat('Supervised jobs', activeEng.length),
+    stat('Compliance expired', compliance.counts?.expired ?? 0, (compliance.counts?.expired ?? 0) > 0),
+    stat('Expiring soon', compliance.counts?.expiringSoon ?? 0),
+  ));
+
+  if (corrections.length > 0) {
+    wrap.append(banner('warn',
+      `${corrections.length} permit(s) have corrections required. These start a clock — address them first.`));
+  }
+  if ((compliance.counts?.expired ?? 0) > 0) {
+    wrap.append(banner('err',
+      'A license or insurance policy has expired. Work relying on it may not be permitted.'));
+  }
+
+  const recent = permits.data.slice(0, 8);
+  wrap.append(el('div', { class: 'card' },
+    el('h2', {}, 'Recent permits'),
+    el('p', { class: 'sub' }, 'Most recently created first.'),
+    recent.length === 0
+      ? emptyState('No permits yet.', 'Start a permit application', () => go('#/intake'))
+      : table(
+          ['Permit #', 'Type', 'Status', 'Issued', 'Expires'],
+          recent.map((p) => ({
+            cells: [p.permit_number || '—', titleCase(p.permit_type), statusPill(p.status), date(p.issued_at), date(p.expires_at)],
+            onClick: () => go('#/permits/' + p.id),
+          })),
+        ),
+  ));
+
+  return wrap;
+};
+
+function stat(label, value, alert = false) {
+  return el('div', { class: 'stat' },
+    el('div', { class: 'k' }, label),
+    el('div', { class: 'v' + (alert ? ' alert' : '') }, String(value)),
+  );
+}
+
+function table(headers, rows) {
+  return el('div', { class: 'table-wrap' },
+    el('table', {},
+      el('thead', {}, el('tr', {}, headers.map((h) => el('th', {}, h)))),
+      el('tbody', {}, rows.map((r) =>
+        el('tr', { class: r.onClick ? 'clickable' : '', ...(r.onClick ? { onclick: r.onClick } : {}) },
+          r.cells.map((c) => el('td', { class: typeof c === 'number' ? 'num' : '' }, c)),
+        ))),
+    ));
+}
+
+views.projects = async () => {
+  const wrap = el('div', {});
+  const list = await api('/v1/projects?limit=50');
+
+  wrap.append(el('div', { class: 'page-head' },
+    el('div', {}, el('h1', {}, 'Projects'), el('p', {}, 'Job sites and the permits under them.')),
+    el('button', { onclick: () => newProject(wrap) }, 'New project'),
+  ));
+
+  wrap.append(el('div', { class: 'card' },
+    list.data.length === 0
+      ? emptyState('No projects yet.', 'Create the first one', () => newProject(wrap))
+      : table(['#', 'Name', 'Address', 'Status', 'Created'],
+          list.data.map((p) => ({
+            cells: [p.project_number, p.name, [p.address_line1, p.city].filter(Boolean).join(', ') || '—', statusPill(p.status), date(p.created_at)],
+          }))),
+  ));
+  return wrap;
+};
+
+async function newProject(container) {
+  const name = prompt('Project name');
+  if (!name) return;
+  try {
+    await api('/v1/projects', { method: 'POST', body: { name } });
+    render();
+  } catch (err) {
+    container.prepend(banner('err', err.message));
+  }
+}
+
+views.permits = async () => {
+  const wrap = el('div', {});
+  const list = await api('/v1/permits?limit=50');
+
+  wrap.append(el('div', { class: 'page-head' },
+    el('div', {}, el('h1', {}, 'Permits'), el('p', {}, 'Filed with the jurisdiction, and where each one stands.')),
+  ));
+
+  wrap.append(el('div', { class: 'card' },
+    list.data.length === 0
+      ? emptyState('No permits yet. Permits are created from an accepted application.', 'Start an application', () => go('#/intake'))
+      : table(['Permit #', 'Type', 'Status', 'Applied', 'Issued', 'Expires', 'Last checked'],
+          list.data.map((p) => ({
+            cells: [
+              p.permit_number || '—', titleCase(p.permit_type), statusPill(p.status),
+              date(p.submitted_at), date(p.issued_at), date(p.expires_at),
+              p.last_checked_at ? dateTime(p.last_checked_at) : el('span', { class: 'muted' }, 'manual'),
+            ],
+          }))),
+  ));
+
+  wrap.append(el('div', { class: 'card' },
+    el('h2', {}, 'About status checks'),
+    el('p', { class: 'sub' },
+      'A jurisdiction shows "manual" until its permitting system has been connected and verified. ' +
+      'Until then a person checks the portal — the system will not guess a status it has not actually retrieved.'),
+  ));
+  return wrap;
+};
+
+views.intake = async () => {
+  const wrap = el('div', {});
+  wrap.append(el('div', { class: 'page-head' },
+    el('div', {}, el('h1', {}, 'Permit applications'), el('p', {}, 'Florida requirements are checked as you fill this in.')),
+    el('button', { onclick: () => go('#/intake/new') }, 'New application'),
+  ));
+
+  const list = await api('/v1/permit-applications?limit=50');
+  wrap.append(el('div', { class: 'card' },
+    list.data.length === 0
+      ? emptyState('No applications yet.', 'Start one', () => go('#/intake/new'))
+      : table(['#', 'Type', 'Job site', 'Status', 'HVHZ', 'Created'],
+          list.data.map((a) => ({
+            cells: [
+              a.application_number, titleCase(a.permit_type),
+              [a.site_address_line1, a.site_city].filter(Boolean).join(', ') || '—',
+              statusPill(a.status),
+              a.in_hvhz ? el('span', { class: 'pill warn' }, 'HVHZ') : el('span', { class: 'muted' }, '—'),
+              date(a.created_at),
+            ],
+            onClick: () => go('#/intake/' + a.id),
+          }))),
+  ));
+  return wrap;
+};
+
+/**
+ * The intake form.
+ *
+ * Everything about what is required comes from the backend: the option lists
+ * from /v1/permit-intake/form-schema, and the live checklist from the
+ * application itself on each save. Nothing about Florida rules is duplicated
+ * here, so this form cannot drift out of step with the server.
+ */
+views.intakeForm = async (id) => {
+  const wrap = el('div', {});
+  const [schema, munis] = await Promise.all([
+    api('/v1/permit-intake/form-schema'),
+    api('/v1/municipalities'),
+  ]);
+
+  let app = null;
+  if (id && id !== 'new') app = await api('/v1/permit-applications/' + id);
+
+  wrap.append(el('div', { class: 'page-head' },
+    el('div', {},
+      el('h1', {}, app ? `Application #${app.application_number}` : 'New permit application'),
+      el('p', {}, app ? titleCase(app.status) : 'Answer what you can — the checklist updates as you go.'),
+    ),
+    el('button', { class: 'quiet', onclick: () => go('#/intake') }, 'Back'),
+  ));
+
+  const msg = el('div', {});
+  wrap.append(msg);
+
+  const inputs = {};
+  const mk = (name, node) => { inputs[name] = node; return node; };
+  const val = (k, d = '') => (app ? (app[k] ?? d) : d);
+
+  const sel = (name, options, selected, blank = true) =>
+    mk(name, el('select', {},
+      blank ? el('option', { value: '' }, 'Select…') : null,
+      options.map((o) => el('option', { value: o.value, ...(String(selected) === String(o.value) ? { selected: true } : {}) }, o.label)),
+    ));
+
+  const txt = (name, value = '', type = 'text') => mk(name, el('input', { type, value: value ?? '' }));
+  const chk = (name, checked) => mk(name, el('input', { type: 'checkbox', ...(checked ? { checked: true } : {}) }));
+
+  const form = el('div', {},
+    el('div', { class: 'card' },
+      el('h2', {}, 'Jurisdiction & type'),
+      el('div', { class: 'grid' },
+        field('Jurisdiction', sel('municipalityId', munis.data.map((m) => ({ value: m.id, label: `${m.name} (${m.kind})` })), val('municipality_id'))),
+        field('Permit type', sel('permitType', schema.permitTypes, val('permit_type'), false)),
+      )),
+
+    el('div', { class: 'card' },
+      el('h2', {}, 'Job site'),
+      el('div', { class: 'grid' },
+        field('Street address', txt('siteAddressLine1', val('site_address_line1'))),
+        field('City', txt('siteCity', val('site_city'))),
+        field('County', txt('siteCounty', val('site_county'))),
+        field('ZIP', txt('sitePostalCode', val('site_postal_code'))),
+        field('Parcel / folio', txt('parcelNumber', val('parcel_number'))),
+      )),
+
+    el('div', { class: 'card' },
+      el('h2', {}, 'Property owner'),
+      el('div', { class: 'grid' },
+        field('Owner name', txt('ownerName', val('owner_name'))),
+        field('Phone', txt('ownerPhone', val('owner_phone'))),
+        field('Email', txt('ownerEmail', val('owner_email'), 'email')),
+      ),
+      el('div', { class: 'row', style: 'margin-top:10px' },
+        chk('isOwnerBuilder', val('is_owner_builder', false)),
+        el('label', { style: 'margin:0' }, 'Owner-builder permit'),
+      )),
+
+    el('div', { class: 'card' },
+      el('h2', {}, 'Scope'),
+      field('Describe the work', mk('scopeOfWork', el('textarea', {}, val('scope_of_work')))),
+      el('div', { class: 'grid', style: 'margin-top:12px' },
+        field('Job valuation ($)', txt('valuation', app?.valuation_cents ? Number(app.valuation_cents) / 100 : '', 'number')),
+        field('Square footage', txt('squareFootage', val('square_footage'), 'number')),
+        field('Occupancy', sel('occupancyType', schema.occupancyTypes, val('occupancy_type'))),
+      ),
+      el('div', { class: 'row', style: 'margin-top:10px' },
+        chk('isNewConstruction', val('is_new_construction', false)),
+        el('label', { style: 'margin:0' }, 'New construction'),
+      )),
+
+    el('div', { class: 'card' },
+      el('h2', {}, 'Florida requirements'),
+      el('p', { class: 'sub' }, schema.rules.hvhzNote),
+      el('div', { class: 'grid' },
+        field('Design wind speed (mph)', txt('designWindSpeedMph', val('design_wind_speed_mph'), 'number')),
+        field('Wind exposure', sel('windExposure', schema.windExposureCategories, val('wind_exposure'))),
+        field('FEMA flood zone', txt('floodZone', val('flood_zone'))),
+      ),
+      el('div', { class: 'row', style: 'margin-top:10px' },
+        chk('isSubstantialImprovement', val('is_substantial_improvement', false)),
+        el('label', { style: 'margin:0' }, 'Substantial improvement (FEMA 50% rule)'),
+      ),
+      el('div', { class: 'row', style: 'margin-top:8px' },
+        chk('nocRecorded', val('noc_recorded', false)),
+        el('label', { style: 'margin:0' }, 'Notice of Commencement recorded'),
+      )),
+
+    el('div', { class: 'card' },
+      el('h2', {}, 'Contact'),
+      el('div', { class: 'grid' },
+        field('Name', txt('contactName', val('contact_name'))),
+        field('Phone', txt('contactPhone', val('contact_phone'))),
+        field('Email', txt('contactEmail', val('contact_email'), 'email')),
+      )),
+  );
+
+  const side = el('div', {});
+  const renderSide = (a) => {
+    side.replaceChildren();
+    if (!a) {
+      side.append(el('div', { class: 'card' },
+        el('h2', {}, 'Requirements'),
+        el('p', { class: 'sub' }, 'Save once to see what this jurisdiction needs.')));
+      return;
+    }
+    const r = a.readiness;
+    side.append(el('div', { class: 'card' },
+      el('h2', {}, 'Completeness'),
+      el('p', { class: 'sub' }, r.canSubmit
+        ? 'Ready to submit.' + (r.warningCount ? ` ${r.warningCount} suggestion(s).` : '')
+        : `${r.blockingCount} item(s) must be resolved.`),
+      el('div', { class: 'checklist' },
+        r.issues.length === 0
+          ? el('div', { class: 'checkitem' }, 'Everything required is present.')
+          : r.issues.map((i) => el('div', { class: 'checkitem' },
+              el('div', {}, i.message),
+              el('span', { class: 'pill ' + (i.severity === 'blocking' ? 'bad' : 'warn') }, i.severity),
+            ))),
+    ));
+    side.append(el('div', { class: 'card' },
+      el('h2', {}, 'Required documents'),
+      el('div', { class: 'checklist' },
+        a.documents.length === 0
+          ? el('p', { class: 'muted' }, 'None yet.')
+          : a.documents.map((d) => el('div', { class: 'checkitem' },
+              el('div', {},
+                el('div', {}, d.label),
+                d.notes ? el('div', { class: 'why' }, d.notes) : null),
+              el('span', { class: 'pill ' + (d.status === 'missing' ? 'bad' : 'ok') }, d.status),
+            ))),
+    ));
+  };
+  renderSide(app);
+
+  const collect = () => {
+    const out = {};
+    const numbers = new Set(['valuation', 'squareFootage', 'designWindSpeedMph']);
+    for (const [k, node] of Object.entries(inputs)) {
+      if (node.type === 'checkbox') { out[k] = node.checked; continue; }
+      const v = node.value.trim();
+      if (!v) continue;
+      out[k] = numbers.has(k) ? Number(v) : v;
+    }
+    return out;
+  };
+
+  const save = async () => {
+    msg.replaceChildren();
+    const payload = collect();
+    if (!payload.permitType) { msg.append(banner('err', 'Choose a permit type.')); return; }
+    try {
+      app = app
+        ? await api('/v1/permit-applications/' + app.id, { method: 'PATCH', body: payload })
+        : await api('/v1/permit-applications', { method: 'POST', body: payload });
+      renderSide(app);
+      msg.append(banner('ok', `Saved — application #${app.application_number}.`));
+      if (app.in_hvhz) msg.append(banner('warn', 'This address is in the HVHZ — a Miami-Dade NOA is required.'));
+      submitBtn.disabled = !app.readiness.canSubmit;
+    } catch (err) {
+      msg.append(banner('err', err.message));
+    }
+  };
+
+  const submitBtn = el('button', { class: 'ghost', disabled: true, onclick: async () => {
+    try {
+      await api('/v1/permit-applications/' + app.id + '/submit', { method: 'POST' });
+      msg.append(banner('ok', 'Application submitted.'));
+      submitBtn.disabled = true;
+    } catch (err) {
+      const issues = err.payload?.details?.issues;
+      msg.append(banner('err', issues ? issues.map((i) => i.message).join(' · ') : err.message));
+    }
+  } }, 'Submit application');
+  if (app) submitBtn.disabled = !app.readiness.canSubmit;
+
+  form.append(el('div', { class: 'row', style: 'margin-top:16px' },
+    el('button', { onclick: save }, 'Save'), submitBtn));
+
+  wrap.append(el('div', { style: 'display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:16px;align-items:start' },
+    form, el('div', { style: 'position:sticky;top:74px' }, side)));
+
+  // Collapse to one column on narrow screens.
+  if (window.matchMedia('(max-width: 860px)').matches) {
+    wrap.lastChild.style.gridTemplateColumns = '1fr';
+  }
+  return wrap;
+};
+
+views.supervision = async () => {
+  const wrap = el('div', {});
+  wrap.append(el('div', { class: 'page-head' },
+    el('div', {},
+      el('h1', {}, 'White-glove supervision'),
+      el('p', {}, 'Permits pulled under a One Contractor Solutions license, with our supervisor on site.')),
+    el('button', { onclick: () => go('#/supervision/new') }, 'Request supervision'),
+  ));
+
+  const list = await api('/v1/supervision/engagements?limit=50');
+
+  wrap.append(el('div', { class: 'card' },
+    list.data.length === 0
+      ? emptyState('No supervised jobs yet.', 'Request supervision', () => go('#/supervision/new'))
+      : table(['#', 'Trade', 'Job site', 'Supervisor', 'Status', 'Visits outstanding'],
+          list.data.map((e) => ({
+            cells: [
+              e.engagement_number, e.trade_name,
+              [e.site_address, e.site_city].filter(Boolean).join(', ') || '—',
+              e.supervisor_name || el('span', { class: 'muted' }, 'not assigned'),
+              statusPill(e.status),
+              e.outstanding_visits > 0
+                ? el('span', { class: 'pill warn' }, String(e.outstanding_visits))
+                : el('span', { class: 'pill ok' }, 'none'),
+            ],
+            onClick: () => go('#/supervision/' + e.id),
+          }))),
+  ));
+  return wrap;
+};
+
+views.supervisionNew = async () => {
+  const wrap = el('div', {});
+  const catalogue = await api('/v1/supervision/catalogue');
+
+  wrap.append(el('div', { class: 'page-head' },
+    el('div', {}, el('h1', {}, 'Request supervision'), el('p', {}, 'Choose the trade you need qualified.')),
+    el('button', { class: 'quiet', onclick: () => go('#/supervision') }, 'Back'),
+  ));
+
+  const msg = el('div', {});
+  wrap.append(msg);
+
+  if (catalogue.data.length === 0) {
+    wrap.append(el('div', { class: 'card' },
+      emptyState('No trades are available for qualifying right now.')));
+    return wrap;
+  }
+
+  const inputs = {};
+  const f = (name, node) => { inputs[name] = node; return node; };
+
+  wrap.append(el('div', { class: 'card' },
+    el('h2', {}, 'Job details'),
+    el('p', { class: 'sub' }, catalogue.note),
+    el('div', { class: 'grid' },
+      field('Trade', f('tradeId', el('select', {},
+        catalogue.data.map((t) => el('option', { value: t.trade_id }, t.name))))),
+      field('Job site address', f('siteAddress', el('input', { type: 'text' }))),
+      field('City', f('siteCity', el('input', { type: 'text' }))),
+      field('County', f('siteCounty', el('input', { type: 'text' }))),
+      field('Estimated value ($)', f('estimatedValue', el('input', { type: 'number', min: '0' }))),
+      field('Requested start', f('requestedStartDate', el('input', { type: 'date' }))),
+    ),
+    field('Scope summary', f('scopeSummary', el('textarea', {}))),
+    el('div', { class: 'row', style: 'margin-top:14px' },
+      el('button', { onclick: async () => {
+        const body = {};
+        for (const [k, node] of Object.entries(inputs)) {
+          const v = node.value.trim();
+          if (v) body[k] = k === 'estimatedValue' ? Number(v) : v;
+        }
+        try {
+          const created = await api('/v1/supervision/engagements', { method: 'POST', body });
+          go('#/supervision/' + created.id);
+        } catch (err) {
+          msg.append(banner('err', err.message));
+        }
+      } }, 'Submit request')),
+  ));
+
+  return wrap;
+};
+
+views.supervisionDetail = async (id) => {
+  const wrap = el('div', {});
+  const e = await api('/v1/supervision/engagements/' + id);
+
+  wrap.append(el('div', { class: 'page-head' },
+    el('div', {},
+      el('h1', {}, `Engagement #${e.engagement_number}`),
+      el('p', {}, `${e.trade_name} · ${[e.site_address, e.site_city].filter(Boolean).join(', ') || 'site not set'}`)),
+    el('button', { class: 'quiet', onclick: () => go('#/supervision') }, 'Back'),
+  ));
+
+  const msg = el('div', {});
+  wrap.append(msg);
+
+  wrap.append(el('div', { class: 'card' },
+    el('div', { class: 'spread' },
+      el('div', {},
+        el('h2', {}, 'Status'),
+        el('p', { class: 'sub' },
+          e.qualifier_name ? `Qualified by ${e.qualifier_name} · license ${e.license_number}` : 'Not yet assigned')),
+      statusPill(e.status)),
+    e.supervisor_name
+      ? el('p', {}, `Supervisor: ${e.supervisor_name}${e.supervisor_phone ? ' · ' + e.supervisor_phone : ''}`)
+      : el('p', { class: 'muted' }, 'A supervisor will be assigned when the engagement is activated.'),
+  ));
+
+  // Terms acceptance is the contractor's step and gates activation.
+  if (!e.terms_accepted_at) {
+    wrap.append(el('div', { class: 'card' },
+      el('h2', {}, 'Service terms'),
+      el('p', { class: 'sub' },
+        'Supervision cannot begin until you accept that One Contractor Solutions qualifies and directs this permitted work. ' +
+        'This requires multi-factor authentication.'),
+      el('button', { onclick: async () => {
+        try {
+          await api('/v1/supervision/engagements/' + id + '/accept-terms', {
+            method: 'POST',
+            body: { acknowledgement: 'I understand that One Contractor Solutions qualifies and supervises this permitted work.' },
+          });
+          render();
+        } catch (err) { msg.append(banner('err', err.message)); }
+      } }, 'Accept terms')));
+  }
+
+  wrap.append(el('div', { class: 'card' },
+    el('h2', {}, 'Required site visits'),
+    el('p', { class: 'sub' },
+      e.progress.canComplete
+        ? 'All required visits are recorded.'
+        : `${e.progress.mandatoryOutstanding} required visit(s) outstanding.`),
+    e.visits.length === 0
+      ? el('p', { class: 'muted' }, 'Visits are generated when the engagement is activated.')
+      : table(['Milestone', 'Required', 'Status', 'Scheduled', 'Checked in', 'Distance', 'Result'],
+          e.visits.map((v) => ({
+            cells: [
+              v.milestone_name,
+              v.is_mandatory ? 'Yes' : 'Optional',
+              statusPill(v.status),
+              dateTime(v.scheduled_for),
+              dateTime(v.checked_in_at),
+              v.distance_from_site_meters === null || v.distance_from_site_meters === undefined
+                ? el('span', { class: 'muted' }, '—')
+                : el('span', { class: 'pill ' + (v.distance_from_site_meters <= 250 ? 'ok' : 'warn') },
+                    v.distance_from_site_meters + ' m'),
+              v.status === 'completed'
+                ? (v.work_approved ? el('span', { class: 'pill ok' }, 'Approved') : el('span', { class: 'pill bad' }, 'Corrections'))
+                : el('span', { class: 'muted' }, '—'),
+            ],
+          }))),
+  ));
+
+  if (e.incidents.length > 0) {
+    wrap.append(el('div', { class: 'card' },
+      el('h2', {}, 'Site observations'),
+      table(['Severity', 'Description', 'Action taken', 'When'],
+        e.incidents.map((i) => ({
+          cells: [statusPill(i.severity), i.description, i.action_taken || '—', date(i.created_at)],
+        }))),
+    ));
+  }
+
+  return wrap;
+};
+
+views.compliance = async () => {
+  const wrap = el('div', {});
+  const [summary, licenses, insurance] = await Promise.all([
+    api('/v1/compliance/summary'),
+    api('/v1/licenses'),
+    api('/v1/insurance-policies'),
+  ]);
+
+  wrap.append(el('div', { class: 'page-head' },
+    el('div', {}, el('h1', {}, 'Licenses & insurance'), el('p', {}, 'Expiry is tracked and warned about automatically.')),
+  ));
+
+  wrap.append(el('div', { class: 'stats' },
+    stat('Active', summary.counts.active),
+    stat('Expiring soon', summary.counts.expiringSoon, summary.counts.expiringSoon > 0),
+    stat('Expired', summary.counts.expired, summary.counts.expired > 0),
+  ));
+
+  wrap.append(el('div', { class: 'card' },
+    el('h2', {}, 'Licenses'),
+    licenses.data.length === 0
+      ? el('p', { class: 'muted' }, 'None recorded.')
+      : table(['Number', 'Trade', 'Status', 'Expires', 'Days left'],
+          licenses.data.map((l) => ({
+            cells: [l.license_number, l.trade || titleCase(l.license_type), statusPill(l.status), date(l.expires_on),
+              l.days_remaining === null ? '—' : Number(l.days_remaining)],
+          }))),
+  ));
+
+  wrap.append(el('div', { class: 'card' },
+    el('h2', {}, 'Insurance'),
+    insurance.data.length === 0
+      ? el('p', { class: 'muted' }, 'None recorded.')
+      : table(['Policy', 'Type', 'Carrier', 'Status', 'Expires'],
+          insurance.data.map((i) => ({
+            cells: [i.policy_number, titleCase(i.insurance_type), i.carrier_name || '—', statusPill(i.status), date(i.expires_on)],
+          }))),
+  ));
+
+  return wrap;
+};
+
+views.notifications = async () => {
+  const wrap = el('div', {});
+  const list = await api('/v1/notifications?limit=50');
+
+  wrap.append(el('div', { class: 'page-head' },
+    el('div', {}, el('h1', {}, 'Notifications')),
+    el('button', { class: 'quiet', onclick: async () => {
+      await api('/v1/notifications/read', { method: 'POST', body: { all: true } });
+      render();
+    } }, 'Mark all read'),
+  ));
+
+  wrap.append(el('div', { class: 'card' },
+    list.data.length === 0
+      ? emptyState('Nothing yet.')
+      : el('div', { class: 'checklist' },
+          list.data.map((n) => el('div', { class: 'checkitem' },
+            el('div', {},
+              el('div', { style: n.read_at ? '' : 'font-weight:600' }, n.title),
+              n.body ? el('div', { class: 'why' }, n.body) : null,
+              el('div', { class: 'why' }, dateTime(n.created_at))),
+            n.read_at ? null : el('span', { class: 'pill info' }, 'new'),
+          ))),
+  ));
+  return wrap;
+};
+
+// ===========================================================================
+// Router
+// ===========================================================================
+
+const go = (hash) => { location.hash = hash; };
+
+const routes = [
+  { re: /^#\/?$/,                    view: () => views.dashboard(),        tab: 'dashboard' },
+  { re: /^#\/projects$/,             view: () => views.projects(),         tab: 'projects' },
+  { re: /^#\/permits$/,              view: () => views.permits(),          tab: 'permits' },
+  { re: /^#\/intake$/,               view: () => views.intake(),           tab: 'intake' },
+  { re: /^#\/intake\/(.+)$/,         view: (m) => views.intakeForm(m[1]),  tab: 'intake' },
+  { re: /^#\/supervision$/,          view: () => views.supervision(),      tab: 'supervision' },
+  { re: /^#\/supervision\/new$/,     view: () => views.supervisionNew(),   tab: 'supervision' },
+  { re: /^#\/supervision\/(.+)$/,    view: (m) => views.supervisionDetail(m[1]), tab: 'supervision' },
+  { re: /^#\/compliance$/,           view: () => views.compliance(),       tab: 'compliance' },
+  { re: /^#\/notifications$/,        view: () => views.notifications(),    tab: 'notifications' },
+];
+
+const TABS = [
+  ['#/', 'Dashboard', 'dashboard'],
+  ['#/intake', 'Applications', 'intake'],
+  ['#/permits', 'Permits', 'permits'],
+  ['#/projects', 'Projects', 'projects'],
+  ['#/supervision', 'White-glove', 'supervision'],
+  ['#/compliance', 'Compliance', 'compliance'],
+  ['#/notifications', 'Alerts', 'notifications'],
+];
+
+function shell(activeTab, content) {
+  const companyPicker = session.companies.length > 1
+    ? el('select', {
+        onchange: (e) => { session.companyId = e.target.value; render(); },
+        style: 'width:auto;padding:5px 8px;font-size:13.5px',
+      }, session.companies.map((c) =>
+        el('option', { value: c.id, ...(c.id === session.companyId ? { selected: true } : {}) }, c.name)))
+    : el('span', {}, session.companies[0]?.name || '');
+
+  return el('div', {},
+    el('header', { class: 'topbar' },
+      el('div', { class: 'brand' }, 'One Contractor ', el('span', {}, 'Solutions')),
+      el('nav', { class: 'tabs' },
+        TABS.map(([href, label, key]) =>
+          el('a', { href, class: key === activeTab ? 'on' : '' }, label))),
+      el('div', { class: 'who' }, companyPicker,
+        el('button', { class: 'quiet', onclick: signOut, style: 'padding:5px 10px;font-size:13px' }, 'Sign out')),
+    ),
+    el('main', {}, content),
+  );
+}
+
+function loginView() {
+  const email = el('input', { type: 'email', autocomplete: 'username' });
+  const password = el('input', { type: 'password', autocomplete: 'current-password' });
+  const msg = el('div', {});
+
+  const apiUrl = el('input', { type: 'url', value: cfg.get('apiUrl'), placeholder: 'https://ocs-api.onrender.com' });
+  const sbUrl = el('input', { type: 'url', value: cfg.get('sbUrl'), placeholder: 'https://xxxx.supabase.co' });
+  const sbKey = el('input', { type: 'password', value: cfg.get('sbKey'), placeholder: 'anon key' });
+
+  const saveCfg = () => {
+    cfg.set('apiUrl', apiUrl.value.trim());
+    cfg.set('sbUrl', sbUrl.value.trim());
+    cfg.set('sbKey', sbKey.value.trim());
+  };
+
+  const submit = async (e) => {
+    e?.preventDefault();
+    saveCfg();
+    msg.replaceChildren();
+    try {
+      await signIn(email.value.trim(), password.value);
+      password.value = '';
+      render();
+    } catch (err) {
+      msg.append(banner('err', err.message));
+    }
+  };
+
+  return el('div', { class: 'login-wrap' },
+    el('form', { class: 'login card', onsubmit: submit },
+      el('h1', {}, 'One Contractor Solutions'),
+      el('p', { class: 'sub' }, 'Contractor portal'),
+      msg,
+      field('Email', email),
+      el('div', { class: 'field' }, el('label', {}, 'Password'), password),
+      el('div', { class: 'row', style: 'margin-top:16px' },
+        el('button', { type: 'submit' }, 'Sign in')),
+      el('details', { class: 'setup' },
+        el('summary', {}, 'Connection settings'),
+        el('div', { class: 'grid' },
+          field('API URL', apiUrl),
+          field('Supabase URL', sbUrl),
+          field('Supabase anon key', sbKey)),
+        el('p', { class: 'muted', style: 'margin-top:8px' },
+          'Stored in this browser only. Use the anon key — never the service_role key.')),
+    ));
+}
+
+async function render() {
+  const root = document.getElementById('root');
+
+  if (!session.signedIn) {
+    root.replaceChildren(loginView());
+    return;
+  }
+
+  const hash = location.hash || '#/';
+  const route = routes.find((r) => r.re.test(hash)) || routes[0];
+  const match = hash.match(route.re);
+
+  // Render the shell immediately so navigation feels instant, then fill it in.
+  const slot = el('div', {}, el('p', { class: 'muted' }, 'Loading…'));
+  root.replaceChildren(shell(route.tab, slot));
+
+  try {
+    const content = await route.view(match);
+    slot.replaceChildren(content);
+  } catch (err) {
+    if (err.status === 401) { signOut(); return; }
+    slot.replaceChildren(
+      banner('err', err.message),
+      // A brand-new account has no company yet; say so plainly rather than
+      // showing an empty dashboard with no explanation.
+      err.payload?.error === 'no_company'
+        ? el('div', { class: 'card' },
+            el('h2', {}, 'No company yet'),
+            el('p', { class: 'sub' }, 'Your account is not linked to a company. Ask an administrator to invite you, or create one.'))
+        : null,
+    );
+  }
+}
+
+window.addEventListener('hashchange', render);
+render();
+})();
+</script>
+</body>
+</html>
