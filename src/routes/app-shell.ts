@@ -39,13 +39,34 @@ import { logger } from '../lib/logger.js';
 const PUBLIC_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../public');
 
 /**
- * The single-page app served at `/` and as the deep-link fallback.
+ * The single-page app, served as the deep-link fallback for every path the
+ * marketing site does not own.
  *
  * Prefers the React build when it is present, and falls back to the standalone
  * portal otherwise, so this backend still serves a usable interface in a
  * deployment that does not include the React bundle.
+ *
+ * Note this is `app.html`, not `index.html`. The root belongs to the public
+ * marketing site now: a visitor who has never heard of us should land on a page
+ * that explains what we do, not on a sign-in screen for a product they do not
+ * have yet.
  */
-const SHELL_FILE = existsSync(join(PUBLIC_DIR, 'index.html')) ? 'index.html' : 'portal.html';
+const SHELL_FILE = existsSync(join(PUBLIC_DIR, 'app.html')) ? 'app.html' : 'portal.html';
+
+/**
+ * Pages of the public marketing site, mapped from their clean URL to the file.
+ *
+ * Extensionless, because `/pricing` is the address a person would type or link
+ * to and `/pricing.html` is an implementation detail leaking into the URL bar.
+ * Anything not in this map falls through to the application shell, which is
+ * what keeps the React router owning its own deep links.
+ */
+const MARKETING_PAGES: Record<string, string> = {
+  '/': 'index.html',
+  '/how-it-works': 'how-it-works.html',
+  '/pricing': 'pricing.html',
+  '/demo': 'demo.html',
+};
 
 /**
  * Policy for the app pages.
@@ -141,11 +162,22 @@ export async function registerAppShell(app: AnyFastifyInstance): Promise<void> {
   });
 
   /**
-   * `/` serves the existing React application (public/index.html), which is
-   * the product people already use. The two single-file pages built alongside
-   * this backend stay reachable at their own paths rather than replacing it.
+   * The public marketing pages, at their clean URLs.
+   *
+   * Registered only when the file is actually present, so a deployment without
+   * the generated site falls straight through to the application shell rather
+   * than serving a 404 at its own front door.
    */
-  app.get('/', async (_req, reply) => reply.sendFile(SHELL_FILE));
+  for (const [route, file] of Object.entries(MARKETING_PAGES)) {
+    if (!existsSync(join(PUBLIC_DIR, file))) continue;
+    app.get(route, async (_req, reply) => reply.sendFile(file));
+    // Same page whether or not the address was typed with a trailing slash.
+    if (route !== '/') {
+      app.get(`${route}/`, async (_req, reply) => reply.sendFile(file));
+    }
+  }
+
+  // The two single-file pages built alongside this backend.
   app.get('/intake', async (_req, reply) => reply.sendFile('permit-intake.html'));
   app.get('/portal', async (_req, reply) => reply.sendFile('portal.html'));
 

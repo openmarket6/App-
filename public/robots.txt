@@ -1,0 +1,11 @@
+User-agent: *
+Allow: /
+
+# The application itself is behind a sign-in and has nothing to index.
+Disallow: /dashboard
+Disallow: /permits
+Disallow: /clients
+Disallow: /settings
+Disallow: /api/
+
+Sitemap: https://1contractorapp.netlify.app/sitemap.xml

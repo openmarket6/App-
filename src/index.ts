@@ -38,6 +38,7 @@ import { compatApiRoutes } from './routes/compat/api.js';
 import { compatCorrectionsRoutes } from './routes/compat/corrections.js';
 import { compatInspectionsRoutes } from './routes/compat/inspections.js';
 import { supervisionRoutes } from './routes/supervision.js';
+import { publicSiteRoutes } from './routes/public-site.js';
 
 export async function buildServer() {
   const app = Fastify({
@@ -255,6 +256,7 @@ export async function buildServer() {
 
   // Compatibility layer for the existing React frontend: same /api contract,
   // backed by Postgres instead of Netlify Blobs.
+  await app.register(publicSiteRoutes);
   await app.register(compatAuthRoutes);
   await app.register(compatCorrectionsRoutes);
   await app.register(compatInspectionsRoutes);

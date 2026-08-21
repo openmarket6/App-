@@ -55,12 +55,39 @@
   status = 200
   force = true
 
-# Single-page-app fallback. The React router owns the URL, so any path that is
-# not a real file returns index.html and the app renders the right screen.
+# -----------------------------------------------------------------------------
+# Clean URLs for the public marketing site.
+#
+# `/pricing` is the address a person types and links to; `/pricing.html` is an
+# implementation detail that does not belong in the URL bar. These sit above the
+# app fallback so the marketing pages win their own paths.
+# -----------------------------------------------------------------------------
+[[redirects]]
+  from = "/how-it-works"
+  to = "/how-it-works.html"
+  status = 200
+
+[[redirects]]
+  from = "/pricing"
+  to = "/pricing.html"
+  status = 200
+
+[[redirects]]
+  from = "/demo"
+  to = "/demo.html"
+  status = 200
+
+# Single-page-app fallback. The React router owns every path the marketing site
+# does not, so anything that is not a real file returns the application shell
+# and the app renders the right screen.
+#
+# Note this is app.html, NOT index.html. The root now belongs to the marketing
+# site: someone who has never heard of us should land on a page that explains
+# what we do, not on a sign-in screen for a product they do not have yet.
 # Must be LAST.
 [[redirects]]
   from = "/*"
-  to = "/index.html"
+  to = "/app.html"
   status = 200
 
 # -----------------------------------------------------------------------------
@@ -86,8 +113,15 @@
   [headers.values]
     Cache-Control = "public, max-age=31536000, immutable"
 
-# The shell must never be cached: a stale index.html pointing at asset hashes
+# The shell must never be cached: a stale app.html pointing at asset hashes
 # that no longer exist is the classic white-screen-after-deploy.
+[[headers]]
+  for = "/app.html"
+  [headers.values]
+    Cache-Control = "no-cache, must-revalidate"
+
+# The marketing pages are regenerated on every deploy and are the first thing a
+# prospect sees, so a stale copy is worse than a revalidation request.
 [[headers]]
   for = "/index.html"
   [headers.values]

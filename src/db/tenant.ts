@@ -113,6 +113,42 @@ export async function withTenant<T>(
 }
 
 /**
+ * Run `fn` as an unauthenticated visitor.
+ *
+ * The public marketing form needs to insert a row while nobody is signed in, so
+ * there is no company and no user to scope to. This runs on the ordinary
+ * `ocs_app` role with NO context set at all: `ocs.current_company_id()` is
+ * null and `ocs.is_service_context()` is false, which means the only policy
+ * that can possibly permit the statement is one written `with check (true)`.
+ *
+ * Today that is the insert policy on ocs.demo_requests and nothing else. The
+ * emptiness of the context is the safety property -- a caller here cannot read
+ * a tenant's data even by accident, because there is no tenant selected and
+ * every tenant-scoped policy therefore matches no rows.
+ *
+ * Never widen this to take a company id. A path that lets an unauthenticated
+ * request name a tenant is the shape of every IDOR bug there is.
+ */
+export async function withPublicWrite<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
+  const client = await appPool.connect();
+  try {
+    await client.query('begin');
+    const result = await fn(wrap(client));
+    await client.query('commit');
+    return result;
+  } catch (err) {
+    try {
+      await client.query('rollback');
+    } catch (rollbackErr) {
+      logger.error({ err: rollbackErr }, 'public write rollback failed');
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/**
  * Run `fn` with cross-tenant access, on the ocs_service role.
  *
  * Only two kinds of caller belong here: the background worker (which processes
