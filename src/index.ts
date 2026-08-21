@@ -29,6 +29,7 @@ import { paymentRoutes } from './routes/payments.js';
 import { webhookRoutes } from './routes/webhooks.js';
 import { adminRoutes } from './routes/admin.js';
 import { municipalIntegrationRoutes } from './routes/municipalIntegration.js';
+import { registerAppShell, isApiPath, hasFrontend, htmlContentSecurityPolicy } from './routes/app-shell.js';
 import { supervisionRoutes } from './routes/supervision.js';
 
 export async function buildServer() {
@@ -38,22 +39,22 @@ export async function buildServer() {
     // balancer. Rate limiting and audit records depend on this being right.
     trustProxy: true,
     genReqId: (req) => (req.headers['x-request-id'] as string) ?? randomUUID(),
-    disableRequestLogging: false,
     // Reject oversized JSON early. Files never come through here -- they go
     // direct to storage -- so a large body is a mistake or an attack.
     bodyLimit: 1024 * 1024,
   });
 
   await app.register(helmet, {
-    // This is a JSON API, never a document host. A restrictive CSP means that
-    // if a response is ever rendered as HTML, nothing in it can execute.
-    contentSecurityPolicy: {
-      directives: {
-        defaultSrc: ["'none'"],
-        frameAncestors: ["'none'"],
-        baseUri: ["'none'"],
-      },
-    },
+    /**
+     * CSP is handled by the onSend hook below, not by helmet.
+     *
+     * This service serves BOTH JSON and the HTML app shell, and they need
+     * different policies. Letting helmet set one while a hook sets another
+     * emits two CSP headers, which browsers intersect -- the stricter one wins
+     * and the shell's inline script is blocked. One header, chosen per
+     * response, is the only arrangement that behaves predictably.
+     */
+    contentSecurityPolicy: false,
     crossOriginResourcePolicy: { policy: 'same-site' },
     hsts: isProd ? { maxAge: 31_536_000, includeSubDomains: true } : false,
   });
@@ -107,8 +108,25 @@ export async function buildServer() {
     },
   });
 
+  /**
+   * One Content-Security-Policy per response, chosen by content type.
+   *
+   * JSON gets `default-src 'none'` -- if an API response is ever rendered as a
+   * document, nothing in it can execute. HTML gets the app-shell policy, which
+   * permits its inline script and style and nothing else off-origin.
+   */
+  const JSON_CSP =
+    "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
+
   app.addHook('onSend', async (req, reply, payload) => {
     reply.header('x-request-id', req.id);
+
+    const type = String(reply.getHeader('content-type') ?? '');
+    reply.header(
+      'content-security-policy',
+      type.includes('text/html') ? htmlContentSecurityPolicy() : JSON_CSP,
+    );
+
     return payload;
   });
 
@@ -158,7 +176,17 @@ export async function buildServer() {
     };
   });
 
+  /**
+   * Unknown paths.
+   *
+   * API paths get a JSON 404 — serving HTML to a fetch() that expected JSON
+   * turns "wrong URL" into a confusing parse error. Everything else falls back
+   * to the portal shell, so a bookmarked deep link still opens the app.
+   */
   app.setNotFoundHandler((req, reply) => {
+    if (!isApiPath(req.url) && hasFrontend() && req.method === 'GET') {
+      return reply.sendFile('portal.html');
+    }
     reply.code(404);
     return { error: 'not_found', message: `No route for ${req.method} ${req.url}` };
   });
@@ -177,6 +205,10 @@ export async function buildServer() {
   await app.register(adminRoutes);
   await app.register(municipalIntegrationRoutes);
   await app.register(supervisionRoutes);
+
+  // Last: serves the portal and intake form from this same service, so the
+  // whole product is one deployment on one origin.
+  await registerAppShell(app);
 
   return app;
 }

@@ -16,10 +16,15 @@ three pieces, each doing one job:
 
 | Piece | What it does | Where it lives | Cost |
 |---|---|---|---|
-| **Frontend** | What people see and click | Netlify (already there) | Free |
-| **Backend API** | Rules, permissions, data | Render — new | Free, then $7/mo |
+| **App (frontend + API)** | The portal people use, and the rules behind it | Render — new | Free, then $7/mo |
 | **Worker** | Scheduled checks, emails | Render — new | Free, then $7/mo |
 | **Database + files + logins** | Where everything is stored | Supabase — new | Free, then $25/mo |
+
+**The frontend ships inside the backend.** The Render service serves the
+contractor portal at `/` and the permit intake form at `/intake`, so there is
+one deployment on one domain. That removes the two things most likely to break
+a split setup: CORS configuration, and a frontend running against an API it no
+longer matches. Your existing Netlify site keeps working and is untouched.
 
 **Why split it up?** Right now everything runs inside one Netlify Function.
 That function has no real database, so data does not reliably persist, and it
@@ -191,18 +196,20 @@ almost always the pooler (must be **Session**) or a password typo.
 
 ---
 
-## Step 5 — Try the permit intake form
+## Step 5 — Open the app
 
-The repo includes a working intake form at `public/permit-intake.html`.
+**Just visit your Render URL.** The portal is served there:
 
-**Quickest way to try it:** open that file in your browser directly. Fill in:
-
-- **API base URL** — your Render URL
-- **Supabase URL** and **anon key** — Supabase → Settings → API
-  (the `anon` key, *not* `service_role` — anon is the one meant for browsers)
+- `https://YOUR-API-URL.onrender.com/` — the contractor portal
+- `https://YOUR-API-URL.onrender.com/intake` — the permit intake form alone
 
 Create a user first: Supabase → **Authentication** → **Users** → **Add user**.
-Then sign in on the form.
+Then sign in on the portal.
+
+The first time, open **Connection settings** on the sign-in box and paste your
+**Supabase URL** and **anon key** (Supabase → Settings → API — the `anon` key,
+*not* `service_role`; anon is the one browsers are meant to use). Those are
+saved in your browser.
 
 The first thing you will see is that the checklist on the right changes as you
 type. Set the county to Broward and the required document switches from Florida
@@ -210,8 +217,9 @@ Product Approval to a Miami-Dade NOA. Put the job valuation above $2,500 and a
 Notice of Commencement requirement appears. That is the backend applying Florida
 rules, not the form guessing.
 
-**To publish it:** drag `public/permit-intake.html` onto Netlify as a new site,
-or copy it into your existing site's folder.
+If you'd rather keep the UI on Netlify, both pages are still self-contained
+single files — drag `public/portal.html` or `public/permit-intake.html` onto
+Netlify and set `CORS_ALLOWED_ORIGINS` on Render to that site's URL.
 
 ---
 
@@ -231,9 +239,10 @@ card numbers.
 
 ---
 
-## Step 7 — Connect your existing Netlify frontend
+## Step 7 — (Optional) Point your existing Netlify site at the API
 
-Your frontend needs two changes:
+Only needed if you want to keep the current Netlify frontend rather than using
+the built-in portal. It needs two changes:
 
 1. Sign in through Supabase instead of whatever it does now.
 2. Call the new API instead of `/api/*`.

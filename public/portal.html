@@ -927,6 +927,242 @@ views.notifications = async () => {
   return wrap;
 };
 
+
+/**
+ * Supervisor's visit screen: check in, photograph, sign off.
+ *
+ * Built for someone standing on a job site holding a phone in one hand. Large
+ * targets, one action per step, and the required-photo count always visible so
+ * they know when they are done before they try to sign off.
+ *
+ * Photos go browser -> Supabase Storage directly via a signed URL. A supervisor
+ * on cellular data uploading a 5 MB photo should not be waiting on our API to
+ * relay the bytes.
+ */
+views.visit = async (visitId) => {
+  const wrap = el('div', {});
+  const msg = el('div', {});
+
+  const [photos, mine] = await Promise.all([
+    api('/v1/supervision/visits/' + visitId + '/photos'),
+    api('/v1/supervision/my-visits?days=90').catch(() => ({ data: [] })),
+  ]);
+  const visit = mine.data.find((v) => v.id === visitId);
+
+  wrap.append(el('div', { class: 'page-head' },
+    el('div', {},
+      el('h1', {}, visit ? visit.milestone_name : 'Site visit'),
+      el('p', {}, visit ? `${visit.company_name} · ${visit.site_address || 'site'}` : '')),
+    el('button', { class: 'quiet', onclick: () => go('#/my-visits') }, 'Back'),
+  ));
+  wrap.append(msg);
+
+  // --- step 1: check in ---
+  const checkInCard = el('div', { class: 'card' },
+    el('h2', {}, '1 · Check in at the site'),
+    el('p', { class: 'sub' },
+      visit?.checked_in_at
+        ? 'Checked in ' + dateTime(visit.checked_in_at)
+        : 'Your location is recorded as proof you were on site.'),
+    visit?.checked_in_at ? null : el('button', { onclick: async (e) => {
+      const btn = e.target;
+      btn.disabled = true; btn.textContent = 'Getting location…';
+      try {
+        const pos = await new Promise((resolve, reject) =>
+          navigator.geolocation.getCurrentPosition(resolve, reject, {
+            enableHighAccuracy: true, timeout: 15000, maximumAge: 0,
+          }));
+        const result = await api('/v1/supervision/visits/' + visitId + '/check-in', {
+          method: 'POST',
+          body: { latitude: pos.coords.latitude, longitude: pos.coords.longitude },
+        });
+        msg.append(banner(result.proximity?.warning ? 'warn' : 'ok',
+          result.proximity?.warning || 'Checked in at the job site.'));
+        render();
+      } catch (err) {
+        btn.disabled = false; btn.textContent = 'Check in';
+        // Location permission denied is the most common failure and needs a
+        // human-readable explanation, not a raw GeolocationPositionError.
+        msg.append(banner('err', err.code === 1
+          ? 'Location permission is required to check in. Enable it for this site and try again.'
+          : err.message || 'Could not get your location.'));
+      }
+    } }, 'Check in'),
+  );
+  wrap.append(checkInCard);
+
+  // --- step 2: photos ---
+  const required = visit?.required_photo_count ?? 3;
+  const grid = el('div', { class: 'checklist' });
+
+  const drawPhotos = (list) => {
+    grid.replaceChildren();
+    if (list.length === 0) {
+      grid.append(el('p', { class: 'muted' }, 'No photos yet.'));
+      return;
+    }
+    for (const ph of list) {
+      grid.append(el('div', { class: 'checkitem' },
+        el('div', {},
+          el('div', {}, titleCase(ph.photo_type)),
+          ph.caption ? el('div', { class: 'why' }, ph.caption) : null,
+          el('div', { class: 'why' },
+            (ph.taken_at ? 'Taken ' + dateTime(ph.taken_at) : 'Uploaded ' + dateTime(ph.uploaded_at)) +
+            (ph.distance_from_site_meters !== null && ph.distance_from_site_meters !== undefined
+              ? ` · ${ph.distance_from_site_meters} m from site` : ''))),
+        ph.pending
+          ? el('span', { class: 'pill warn' }, 'uploading')
+          : ph.url
+            ? el('a', { href: ph.url, target: '_blank', rel: 'noopener', class: 'pill ok' }, 'view')
+            : el('span', { class: 'pill grey' }, 'unavailable'),
+      ));
+    }
+  };
+  drawPhotos(photos.data);
+
+  const typeSel = el('select', {},
+    ['site_overview', 'work_in_progress', 'completed_work', 'defect', 'materials', 'safety', 'other']
+      .map((t) => el('option', { value: t }, titleCase(t))));
+  const captionInput = el('input', { type: 'text', placeholder: 'Caption (optional)' });
+  // `capture` opens the camera directly on a phone rather than the photo roll.
+  const fileInput = el('input', { type: 'file', accept: 'image/*', capture: 'environment' });
+
+  const counter = el('p', { class: 'sub' });
+  const updateCounter = (n) => {
+    counter.textContent = n >= required
+      ? `${n} of ${required} required photos — complete.`
+      : `${n} of ${required} required photos.`;
+  };
+  updateCounter(photos.data.length);
+
+  const uploadBtn = el('button', { onclick: async () => {
+    const file = fileInput.files?.[0];
+    if (!file) { msg.append(banner('err', 'Choose or take a photo first.')); return; }
+
+    uploadBtn.disabled = true;
+    uploadBtn.textContent = 'Uploading…';
+    try {
+      // Attach location if the browser will give it, but never block the upload
+      // on it — a photo without coordinates is still evidence.
+      let coords = null;
+      try {
+        const pos = await new Promise((resolve, reject) =>
+          navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 8000 }));
+        coords = { latitude: pos.coords.latitude, longitude: pos.coords.longitude };
+      } catch { /* proceed without coordinates */ }
+
+      const init = await api('/v1/supervision/visits/' + visitId + '/photos', {
+        method: 'POST',
+        body: {
+          fileName: file.name || 'photo.jpg',
+          contentType: file.type || 'image/jpeg',
+          byteSize: file.size,
+          photoType: typeSel.value,
+          caption: captionInput.value.trim() || undefined,
+          takenAt: file.lastModified ? new Date(file.lastModified).toISOString() : undefined,
+          ...(coords || {}),
+        },
+      });
+
+      const put = await fetch(init.upload.url, {
+        method: 'PUT',
+        headers: init.upload.headers,
+        body: file,
+      });
+      if (!put.ok) throw new Error('Upload to storage failed (' + put.status + ')');
+
+      const confirmed = await api(init.confirmUrl, { method: 'POST' });
+
+      const refreshed = await api('/v1/supervision/visits/' + visitId + '/photos');
+      drawPhotos(refreshed.data);
+      updateCounter(confirmed.photoCount ?? refreshed.data.length);
+      fileInput.value = ''; captionInput.value = '';
+      msg.append(banner('ok', 'Photo added.'));
+    } catch (err) {
+      msg.append(banner('err', err.message));
+    } finally {
+      uploadBtn.disabled = false;
+      uploadBtn.textContent = 'Add photo';
+    }
+  } }, 'Add photo');
+
+  wrap.append(el('div', { class: 'card' },
+    el('h2', {}, '2 · Photograph the work'),
+    counter,
+    el('div', { class: 'grid' },
+      field('Photo shows', typeSel),
+      field('Caption', captionInput)),
+    el('div', { style: 'margin-top:12px' }, field('Photo', fileInput)),
+    el('div', { class: 'row', style: 'margin-top:12px' }, uploadBtn),
+    el('div', { style: 'margin-top:16px' }, grid),
+  ));
+
+  // --- step 3: sign off ---
+  const findings = el('textarea', { placeholder: 'What did you observe?' });
+  const approved = el('input', { type: 'checkbox', checked: true });
+  const corrections = el('textarea', { placeholder: 'Required corrections' });
+  const signature = el('input', { type: 'text', placeholder: 'Type your full name' });
+
+  wrap.append(el('div', { class: 'card' },
+    el('h2', {}, '3 · Sign off'),
+    el('p', { class: 'sub' },
+      'Your signature records what you saw. This cannot be submitted until the required photos are uploaded.'),
+    field('Findings', findings),
+    el('div', { class: 'row', style: 'margin:10px 0' }, approved, el('label', { style: 'margin:0' }, 'Work approved')),
+    field('Corrections required (if not approved)', corrections),
+    field('Signature', signature),
+    el('div', { class: 'row', style: 'margin-top:12px' },
+      el('button', { onclick: async (e) => {
+        const btn = e.target;
+        btn.disabled = true;
+        try {
+          await api('/v1/supervision/visits/' + visitId + '/sign-off', {
+            method: 'POST',
+            body: {
+              findings: findings.value.trim(),
+              workApproved: approved.checked,
+              correctionsRequired: corrections.value.trim() || undefined,
+              signatureName: signature.value.trim(),
+            },
+          });
+          msg.append(banner('ok', 'Visit signed off.'));
+          btn.disabled = true;
+        } catch (err) {
+          btn.disabled = false;
+          msg.append(banner('err', err.message));
+        }
+      } }, 'Sign off visit')),
+  ));
+
+  return wrap;
+};
+
+/** A supervisor's own route: the visits assigned to them. */
+views.myVisits = async () => {
+  const wrap = el('div', {});
+  const list = await api('/v1/supervision/my-visits?days=14');
+
+  wrap.append(el('div', { class: 'page-head' },
+    el('div', {}, el('h1', {}, 'My site visits'), el('p', {}, 'Assigned to you over the next two weeks.')),
+  ));
+
+  wrap.append(el('div', { class: 'card' },
+    list.data.length === 0
+      ? emptyState('No visits assigned.')
+      : table(['Milestone', 'Contractor', 'Site', 'Scheduled', 'Status', 'Photos'],
+          list.data.map((v) => ({
+            cells: [
+              v.milestone_name, v.company_name,
+              [v.site_address, v.site_city].filter(Boolean).join(', ') || '—',
+              dateTime(v.scheduled_for), statusPill(v.status),
+              `${v.photo_count ?? 0} / ${v.required_photo_count ?? 3}`,
+            ],
+            onClick: () => go('#/visit/' + v.id),
+          }))),
+  ));
+  return wrap;
+};
+
 // ===========================================================================
 // Router
 // ===========================================================================
@@ -944,6 +1180,8 @@ const routes = [
   { re: /^#\/supervision\/(.+)$/,    view: (m) => views.supervisionDetail(m[1]), tab: 'supervision' },
   { re: /^#\/compliance$/,           view: () => views.compliance(),       tab: 'compliance' },
   { re: /^#\/notifications$/,        view: () => views.notifications(),    tab: 'notifications' },
+  { re: /^#\/my-visits$/,            view: () => views.myVisits(),         tab: 'my-visits' },
+  { re: /^#\/visit\/(.+)$/,          view: (m) => views.visit(m[1]),       tab: 'my-visits' },
 ];
 
 const TABS = [
@@ -954,6 +1192,9 @@ const TABS = [
   ['#/supervision', 'White-glove', 'supervision'],
   ['#/compliance', 'Compliance', 'compliance'],
   ['#/notifications', 'Alerts', 'notifications'],
+  // Only meaningful for OCS field staff; harmless for contractors, whose
+  // my-visits list simply comes back empty.
+  ['#/my-visits', 'My visits', 'my-visits'],
 ];
 
 function shell(activeTab, content) {

@@ -1,7 +1,11 @@
 # Render Blueprint for One Contractor Solutions.
 #
 # Two services from one repository:
-#   ocs-api     -- the HTTP API (this is what the Netlify frontend calls)
+#   ocs-api     -- the HTTP API *and* the frontend. It serves the contractor
+#                  portal at / and the permit intake form at /intake, so the
+#                  whole product is one deployment on one domain: no CORS to
+#                  configure, and the UI can never be a different version from
+#                  the API it talks to.
 #   ocs-worker  -- background jobs: municipal status checks, expiry reminders,
 #                  notification delivery, webhook processing
 #
@@ -47,8 +51,11 @@ services:
         sync: false          # https://ocs-api.onrender.com (or your domain)
       - key: APP_BASE_URL
         sync: false          # https://one-contractor-solutions.netlify.app
+      # Only needed if a SEPARATE frontend (e.g. the existing Netlify site)
+      # also calls this API. The built-in portal is same-origin and needs no
+      # entry here. Exact origins, comma-separated. Never "*".
       - key: CORS_ALLOWED_ORIGINS
-        sync: false          # exact frontend origins, comma-separated. Never "*"
+        sync: false
 
       # --- Database ---------------------------------------------------------
       # Three Supabase connection strings, differing only in the role:

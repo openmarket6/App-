@@ -355,7 +355,21 @@ The database refuses to record states it cannot stand behind:
 | Qualifier and supervisor caseload caps | trigger — an unbounded caseload makes "real supervisory control" indefensible |
 | Cannot complete with mandatory visits outstanding | `check_engagement_completion` trigger |
 | A visit isn't "completed" without a check-in **and** a sign-off | CHECK constraint |
+| A visit cannot be signed off without its **photographs** | `check_visit_photo_evidence` trigger |
+| Required photo *types* must each be present (e.g. site overview + completed work) | same trigger |
+| A signed-off visit's photo set cannot be altered afterwards | route guard + audit |
 | Waiving a required visit needs a reason, and is audited | CHECK + audit log |
+
+**Photographs are part of what makes a visit complete, not an attachment to it.**
+100% supervision means every visit is photographed, so the database refuses to
+mark a visit signed off until the required photos exist — the same way an
+engagement refuses to complete while required visits are outstanding. A GPS
+check-in shows someone was at the address; photos show what they saw when they
+got there. Final inspections require 4 photos including a site overview and the
+completed work; other milestones require 3. Images go through the normal
+document pipeline, so they inherit private storage, signed URLs and retention.
+`taken_at` and `uploaded_at` are stored separately on purpose: a large gap
+between them is the signature of photos assembled after the fact.
 
 Check-in records GPS coordinates and the computed distance from the job site
 (`src/domain/geo.ts`). A check-in outside the 250 m radius is **accepted but
@@ -372,9 +386,16 @@ requirements of a job already under way.
 
 ## Frontend
 
-Two self-contained pages in `public/`, each a single file with no build step, no
-framework and no CDN — matching how the current site deploys (drag-and-drop of
-one asset onto Netlify):
+**The frontend is served by the API itself.** One deployment, one origin:
+`/` is the portal, `/intake` is the standalone intake form, `/v1/*` is the API.
+That removes CORS from the picture entirely and makes it impossible for the UI
+and the API to be different versions of each other. Unknown non-API paths fall
+back to the shell so deep links work; unknown `/v1/*` paths still return a JSON
+404 rather than a page of HTML.
+
+Both pages remain self-contained single files with no build step, no framework
+and no CDN, so they can still be dropped straight onto Netlify if the frontend
+is ever split out again.
 
 - **`portal.html`** — the full contractor portal: dashboard, permit
   applications with the live Florida checklist, permits, projects, white-glove
@@ -428,7 +449,7 @@ TEST_SERVICE_DATABASE_URL="postgresql://ocs_service:PASSWORD@localhost:5432/ocs_
   npm test
 ```
 
-65 tests. The database ones run against a **real Postgres**, because RLS is a
+69 tests. The database ones run against a **real Postgres**, because RLS is a
 database behaviour — a mock would return whatever the test told it to and prove
 nothing.
 
@@ -442,8 +463,9 @@ nothing.
 - `permit-intake.test.ts` (28) — every Florida rule above, submission readiness,
   adapter status mapping and URL escaping, and the verification gate that keeps
   an unverified jurisdiction from ever running automated checks.
-- `supervision.test.ts` (13) — every compliance gate in the table above, plus
-  site-proximity maths and cross-tenant isolation of supervision records.
+- `supervision.test.ts` (17) — every compliance gate in the table above,
+  including all four photo-evidence gates, plus site-proximity maths and
+  cross-tenant isolation of supervision records.
 
 Tests skip cleanly when the `TEST_*` variables are unset.
 
@@ -466,7 +488,8 @@ running, but each should be settled before real customer data depends on it.
 | **MFA is enforced only on refunds and membership changes.** | Other sensitive actions accept a password-only session. | Widen `requireMfa()` once TOTP enrolment is rolled out to users. |
 | **No load testing.** | Real concurrency behaviour is unmeasured. | Run a load test against staging before onboarding many contractors. |
 | **The white-glove model needs legal review.** | The rules encoded in `0012_supervision.sql` are a floor, not a compliance opinion. | Have a Florida construction attorney review the qualifying-and-supervision model and the contractor terms text before selling it. |
-| **Frontend does not match the existing site.** | The live site was unreachable from the build environment. | Send the current `index.html` (or connect Netlify to Git) and the portal can be restyled to match. |
+| **Frontend does not match the existing site.** | The live site was unreachable from the build environment (egress policy returns 403 for the Netlify domain). | Send the current `index.html` — Netlify → Deploys → latest → **Download deploy** — and the portal can be restyled to match. |
+| **Inline script/style require `unsafe-inline` in the page CSP.** | Slightly weaker than a nonce-based policy for the two HTML pages. The JSON API keeps `default-src 'none'`. | Split the CSS/JS out of the HTML and drop `unsafe-inline`, if the single-file property is no longer needed. |
 
 ---
 

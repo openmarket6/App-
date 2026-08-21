@@ -253,6 +253,145 @@ describeIfDb('qualifying and supervision, enforced by the database', () => {
     expect(status.completed_at).not.toBeNull();
   });
 
+  it('refuses to sign off a visit with no photographs', async () => {
+    // 100% supervision means every visit is photographed. A signed-off visit
+    // with no photos would say a supervisor stood in a parking lot.
+    await expect(
+      asTenant(appUrl!, { companyId: ALPHA }, async (c) => {
+        const e = await c.query(
+          `insert into ocs.supervision_engagements (company_id, trade_id, status)
+           values ($1, ${ROOFING}, 'accepted') returning id`,
+          [ALPHA],
+        );
+        const v = await c.query(
+          `insert into ocs.supervision_visits
+             (engagement_id, milestone_code, milestone_name, status,
+              required_photo_count, checked_in_at)
+           values ($1, 'final', 'Final', 'in_progress', 3, now()) returning id`,
+          [e.rows[0].id],
+        );
+        await c.query(
+          `update ocs.supervision_visits
+              set status='completed', signed_off_at=now(), signature_name='S'
+            where id=$1`,
+          [v.rows[0].id],
+        );
+      }),
+    ).rejects.toThrow(/3 photo\(s\) required, 0 uploaded/i);
+  });
+
+  it('refuses sign-off when a required photo TYPE is missing', async () => {
+    // Four photos of material labels do not show the completed work.
+    await expect(
+      asTenant(appUrl!, { companyId: ALPHA }, async (c) => {
+        const e = await c.query(
+          `insert into ocs.supervision_engagements (company_id, trade_id, status)
+           values ($1, ${ROOFING}, 'accepted') returning id`,
+          [ALPHA],
+        );
+        const v = await c.query(
+          `insert into ocs.supervision_visits
+             (engagement_id, milestone_code, milestone_name, status,
+              required_photo_count, required_photo_types, checked_in_at)
+           values ($1, 'final', 'Final', 'in_progress', 2,
+                   array['site_overview','completed_work'], now()) returning id`,
+          [e.rows[0].id],
+        );
+        for (let i = 0; i < 2; i++) {
+          const d = await c.query(
+            `insert into ocs.documents (company_id, name, category)
+             values ($1, $2, 'photo') returning id`,
+            [ALPHA, 'photo' + i],
+          );
+          await c.query(
+            `insert into ocs.supervision_visit_photos (visit_id, document_id, photo_type)
+             values ($1, $2, 'materials')`,
+            [v.rows[0].id, d.rows[0].id],
+          );
+        }
+        await c.query(
+          `update ocs.supervision_visits
+              set status='completed', signed_off_at=now(), signature_name='S'
+            where id=$1`,
+          [v.rows[0].id],
+        );
+      }),
+    ).rejects.toThrow(/missing required photo type/i);
+  });
+
+  it('signs off once the photographic record is complete', async () => {
+    const result = await asTenant(appUrl!, { companyId: ALPHA }, async (c) => {
+      const e = await c.query(
+        `insert into ocs.supervision_engagements (company_id, trade_id, status)
+         values ($1, ${ROOFING}, 'accepted') returning id`,
+        [ALPHA],
+      );
+      const v = await c.query(
+        `insert into ocs.supervision_visits
+           (engagement_id, milestone_code, milestone_name, status,
+            required_photo_count, required_photo_types, checked_in_at)
+         values ($1, 'final', 'Final', 'in_progress', 2,
+                 array['site_overview','completed_work'], now()) returning id`,
+        [e.rows[0].id],
+      );
+      for (const type of ['site_overview', 'completed_work']) {
+        const d = await c.query(
+          `insert into ocs.documents (company_id, name, category)
+           values ($1, $2, 'photo') returning id`,
+          [ALPHA, type],
+        );
+        await c.query(
+          `insert into ocs.supervision_visit_photos (visit_id, document_id, photo_type)
+           values ($1, $2, $3::ocs.visit_photo_type)`,
+          [v.rows[0].id, d.rows[0].id, type],
+        );
+      }
+      const done = await c.query(
+        `update ocs.supervision_visits
+            set status='completed', signed_off_at=now(), signature_name='S'
+          where id=$1 returning status::text, photo_count`,
+        [v.rows[0].id],
+      );
+      return done.rows[0];
+    });
+
+    expect(result.status).toBe('completed');
+    // photo_count is maintained by trigger, not by the caller.
+    expect(result.photo_count).toBe(2);
+  });
+
+  it('keeps the photo count accurate as photos are added and removed', async () => {
+    const counts = await asTenant(appUrl!, { companyId: ALPHA }, async (c) => {
+      const e = await c.query(
+        `insert into ocs.supervision_engagements (company_id, trade_id, status)
+         values ($1, ${ROOFING}, 'accepted') returning id`,
+        [ALPHA],
+      );
+      const v = await c.query(
+        `insert into ocs.supervision_visits
+           (engagement_id, milestone_code, milestone_name, status)
+         values ($1, 'dry_in', 'Dry-in', 'in_progress') returning id`,
+        [e.rows[0].id],
+      );
+      const d = await c.query(
+        `insert into ocs.documents (company_id, name, category)
+         values ($1, 'p', 'photo') returning id`,
+        [ALPHA],
+      );
+      await c.query(
+        `insert into ocs.supervision_visit_photos (visit_id, document_id, photo_type)
+         values ($1, $2, 'site_overview')`,
+        [v.rows[0].id, d.rows[0].id],
+      );
+      const after = await c.query(`select photo_count from ocs.supervision_visits where id=$1`, [v.rows[0].id]);
+      await c.query(`delete from ocs.supervision_visit_photos where visit_id=$1`, [v.rows[0].id]);
+      const removed = await c.query(`select photo_count from ocs.supervision_visits where id=$1`, [v.rows[0].id]);
+      return { added: after.rows[0].photo_count, removed: removed.rows[0].photo_count };
+    });
+    expect(counts.added).toBe(1);
+    expect(counts.removed).toBe(0);
+  });
+
   it('keeps engagements isolated between contractors', async () => {
     // Supervision records are as tenant-sensitive as anything else here.
     const visible = await asTenant(

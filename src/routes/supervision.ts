@@ -23,7 +23,12 @@ import { writeAudit } from '../lib/audit.js';
 import { notFound, unprocessable, badRequest, forbidden } from '../lib/errors.js';
 import { paginationQuery, decodeCursor, buildPage } from '../lib/pagination.js';
 import { notify } from '../services/notifications.js';
-import { assessProximity, CHECK_IN_RADIUS_METERS } from '../domain/geo.js';
+import { assessProximity, CHECK_IN_RADIUS_METERS, distanceMeters } from '../domain/geo.js';
+import {
+  buildStorageKey, createSignedUploadUrl, createSignedDownloadUrl,
+  headObject, assertAllowedContentType, sanitizeFileName,
+} from '../services/storage.js';
+import { env } from '../config/env.js';
 import { logger } from '../lib/logger.js';
 
 const ENGAGEMENT_COLUMNS = `
@@ -58,7 +63,8 @@ async function loadEngagement(tx: Tx, companyId: string, id: string) {
             v.status::text, v.scheduled_for, v.checked_in_at, v.checked_out_at,
             v.distance_from_site_meters, v.findings, v.work_approved,
             v.corrections_required, v.signed_off_at, v.signature_name,
-            v.waiver_reason, s.display_name as supervisor_name
+            v.waiver_reason, v.photo_count, v.required_photo_count,
+            v.required_photo_types, s.display_name as supervisor_name
        from ocs.supervision_visits v
        left join ocs.supervisors s on s.id = v.supervisor_id
       where v.engagement_id = $1
@@ -397,11 +403,17 @@ export async function supervisionRoutes(app: FastifyInstance): Promise<void> {
       }
 
       // Generate the visit list from the template for this trade.
+      //
+      // The photo requirements are COPIED onto each visit alongside the
+      // milestone, for the same reason the milestone itself is: editing a
+      // template later must never change what an in-flight job was required to
+      // produce.
       await tx.query(
         `insert into ocs.supervision_visits
            (engagement_id, milestone_code, milestone_name, sequence, is_mandatory,
-            supervisor_id, status)
-         select $1, t.code, t.name, t.sequence, t.is_mandatory, $2, 'required'
+            supervisor_id, status, required_photo_count, required_photo_types)
+         select $1, t.code, t.name, t.sequence, t.is_mandatory, $2, 'required',
+                t.min_photos, t.required_photo_types
            from ocs.visit_milestone_templates t
           where t.trade_id = $3
          on conflict (engagement_id, milestone_code) do nothing`,
@@ -665,6 +677,40 @@ export async function supervisionRoutes(app: FastifyInstance): Promise<void> {
       }
       if (visit.status === 'completed') throw unprocessable('This visit is already signed off');
 
+      // The database enforces the photo requirement, but a raw trigger message
+      // is a poor thing to hand a supervisor standing on a roof. Check first and
+      // say exactly what is still needed.
+      const evidence = await tx.one<{
+        photo_count: number; required_photo_count: number; required_photo_types: string[];
+      }>(
+        `select photo_count, required_photo_count, required_photo_types
+           from ocs.supervision_visits where id = $1`,
+        [visitId],
+      );
+
+      if (evidence && evidence.photo_count < evidence.required_photo_count) {
+        throw unprocessable(
+          `This visit needs ${evidence.required_photo_count} photo(s) before it can be signed off; ` +
+            `${evidence.photo_count} uploaded so far.`,
+          { photoCount: evidence.photo_count, requiredPhotoCount: evidence.required_photo_count },
+        );
+      }
+
+      if (evidence && evidence.required_photo_types.length > 0) {
+        const present = await tx.many<{ photo_type: string }>(
+          `select distinct photo_type::text from ocs.supervision_visit_photos where visit_id = $1`,
+          [visitId],
+        );
+        const have = new Set(present.map((r) => r.photo_type));
+        const missing = evidence.required_photo_types.filter((t) => !have.has(t));
+        if (missing.length > 0) {
+          throw unprocessable(
+            `Missing required photo type(s): ${missing.map((m) => m.replace(/_/g, ' ')).join(', ')}`,
+            { missingPhotoTypes: missing },
+          );
+        }
+      }
+
       const row = await tx.one(
         `update ocs.supervision_visits
             set checked_out_at = coalesce(checked_out_at, now()),
@@ -801,6 +847,376 @@ export async function supervisionRoutes(app: FastifyInstance): Promise<void> {
       }),
       { reason: 'supervisor_route' },
     );
+  });
+
+
+  // ---------------------------------------------------------------------------
+  // Visit photos — the evidence a supervision record actually rests on
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Start a photo upload for a visit.
+   *
+   * Creates the document row, the version row and the photo link, then returns
+   * a signed URL the phone PUTs the image to directly. The image never passes
+   * through this API: a supervisor on a job site is on cellular data with a
+   * 5 MB photo, and streaming that through a request worker would be slow for
+   * them and expensive for us.
+   *
+   * The caller sends whatever capture metadata the device has (taken_at, GPS).
+   * We record it, and where the job site has coordinates we compute the
+   * distance ourselves rather than trusting a supplied one.
+   */
+  app.post('/v1/supervision/visits/:visitId/photos', { preHandler: authenticate }, async (req, reply) => {
+    const p = principalOf(req);
+    const ctx = tenantOf(req);
+    requirePlatformRole(p, 'staff');
+
+    const { visitId } = parse(z.object({ visitId: z.string().uuid() }), req.params, 'parameters');
+    const body = parse(
+      z.object({
+        fileName: z.string().trim().min(1).max(255),
+        contentType: z.string().trim().min(1).max(150),
+        byteSize: z.number().int().positive().max(env.MAX_UPLOAD_BYTES),
+        photoType: z.enum([
+          'site_overview', 'work_in_progress', 'completed_work',
+          'defect', 'materials', 'safety', 'other',
+        ]).default('work_in_progress'),
+        caption: z.string().trim().max(500).optional(),
+        takenAt: z.string().datetime().optional(),
+        latitude: z.number().min(-90).max(90).optional(),
+        longitude: z.number().min(-180).max(180).optional(),
+        exif: z.record(z.unknown()).optional(),
+      }),
+      req.body,
+      'photo',
+    );
+
+    // Photographs only. Accepting a PDF here would let the count be satisfied
+    // by something that is not a photograph of the work.
+    if (!body.contentType.toLowerCase().startsWith('image/')) {
+      throw badRequest('Visit evidence must be an image');
+    }
+    assertAllowedContentType(body.contentType);
+
+    const prepared = await withTenant(ctx, async (tx) => {
+      const visit = await tx.one<{
+        id: string; status: string; milestone_name: string; engagement_id: string;
+        site_latitude: string | null; site_longitude: string | null;
+      }>(
+        `select v.id, v.status::text, v.milestone_name, v.engagement_id,
+                e.site_latitude, e.site_longitude
+           from ocs.supervision_visits v
+           join ocs.supervision_engagements e on e.id = v.engagement_id
+          where v.id = $1 and v.company_id = $2`,
+        [visitId, ctx.companyId],
+      );
+      if (!visit) throw notFound('Visit');
+      if (visit.status === 'completed') {
+        throw unprocessable('This visit is already signed off; photos can no longer be added');
+      }
+
+      const document = await tx.one<{ id: string }>(
+        `insert into ocs.documents
+           (company_id, name, category, description, is_client_visible, uploaded_by)
+         values ($1, $2, 'photo', $3, true, $4)
+         returning id`,
+        [
+          ctx.companyId,
+          sanitizeFileName(body.fileName),
+          `${visit.milestone_name} — ${body.photoType.replace(/_/g, ' ')}`,
+          p.userId,
+        ],
+      );
+      if (!document) throw badRequest('Could not create the photo record');
+
+      const storageKey = buildStorageKey({
+        companyId: ctx.companyId,
+        documentId: document.id,
+        versionNumber: 1,
+        fileName: body.fileName,
+      });
+
+      const version = await tx.one<{ id: string }>(
+        `insert into ocs.document_versions
+           (company_id, document_id, version_number, storage_bucket, storage_key,
+            file_name, content_type, byte_size, metadata, uploaded_by, upload_state)
+         values ($1,$2,1,$3,$4,$5,$6,$7,$8,$9,'pending')
+         returning id`,
+        [
+          ctx.companyId, document.id, env.SUPABASE_STORAGE_BUCKET, storageKey,
+          sanitizeFileName(body.fileName), body.contentType, body.byteSize,
+          JSON.stringify(body.exif ?? {}), p.userId,
+        ],
+      );
+      if (!version) throw badRequest('Could not create the photo version');
+
+      await tx.query(
+        `update ocs.documents set current_version_id = $2, version_count = 1 where id = $1`,
+        [document.id, version.id],
+      );
+
+      // Distance is computed here from the site's own coordinates, not accepted
+      // from the client.
+      let distance: number | null = null;
+      if (
+        body.latitude !== undefined && body.longitude !== undefined &&
+        visit.site_latitude !== null && visit.site_longitude !== null
+      ) {
+        distance = distanceMeters(
+          { latitude: Number(visit.site_latitude), longitude: Number(visit.site_longitude) },
+          { latitude: body.latitude, longitude: body.longitude },
+        );
+      }
+
+      const photo = await tx.one<{ id: string }>(
+        `insert into ocs.supervision_visit_photos
+           (visit_id, document_id, photo_type, caption, taken_at,
+            latitude, longitude, distance_from_site_meters, exif, uploaded_by,
+            sequence)
+         values ($1,$2,$3::ocs.visit_photo_type,$4,$5,$6,$7,$8,$9,$10,
+                 coalesce((select max(sequence)+1 from ocs.supervision_visit_photos
+                            where visit_id = $1), 0))
+         returning id`,
+        [
+          visitId, document.id, body.photoType, body.caption ?? null,
+          body.takenAt ?? null, body.latitude ?? null, body.longitude ?? null,
+          distance, JSON.stringify(body.exif ?? {}), p.userId,
+        ],
+      );
+
+      return { photoId: photo?.id ?? null, documentId: document.id, versionId: version.id, storageKey, distance };
+    });
+
+    // Signed outside the transaction: an external round trip must not hold a
+    // pooled database connection open.
+    const signed = await createSignedUploadUrl(prepared.storageKey);
+
+    return created(reply, {
+      photoId: prepared.photoId,
+      documentId: prepared.documentId,
+      versionId: prepared.versionId,
+      distanceFromSiteMeters: prepared.distance,
+      upload: {
+        url: signed.uploadUrl,
+        method: 'PUT',
+        headers: { 'content-type': body.contentType },
+        expiresInSeconds: signed.expiresInSeconds,
+      },
+      confirmUrl: `/v1/supervision/visits/${visitId}/photos/${prepared.photoId}/confirm`,
+    });
+  });
+
+  /**
+   * Confirm the image landed.
+   *
+   * Reads the object back from storage for its real size. Until this succeeds
+   * the photo row exists but the file may not, so an abandoned upload leaves a
+   * pending row rather than a phantom piece of evidence.
+   */
+  app.post(
+    '/v1/supervision/visits/:visitId/photos/:photoId/confirm',
+    { preHandler: authenticate },
+    async (req) => {
+      const p = principalOf(req);
+      const ctx = tenantOf(req);
+      requirePlatformRole(p, 'staff');
+
+      const params = parse(
+        z.object({ visitId: z.string().uuid(), photoId: z.string().uuid() }),
+        req.params,
+        'parameters',
+      );
+
+      const version = await withTenant(ctx, async (tx) =>
+        tx.one<{ id: string; storage_key: string; upload_state: string }>(
+          `select dv.id, dv.storage_key, dv.upload_state
+             from ocs.supervision_visit_photos ph
+             join ocs.documents d on d.id = ph.document_id
+             join ocs.document_versions dv on dv.id = d.current_version_id
+            where ph.id = $1 and ph.visit_id = $2 and ph.company_id = $3`,
+          [params.photoId, params.visitId, ctx.companyId],
+        ),
+      );
+      if (!version) throw notFound('Photo');
+      if (version.upload_state === 'uploaded') {
+        return { photoId: params.photoId, alreadyConfirmed: true };
+      }
+
+      const info = await headObject(version.storage_key);
+      if (!info) {
+        throw unprocessable('No uploaded image was found for this photo');
+      }
+
+      return withTenant(ctx, async (tx) => {
+        await tx.query(
+          `update ocs.document_versions
+              set upload_state = 'uploaded', uploaded_at = now(),
+                  byte_size = $2, content_type = $3, scan_status = 'skipped'
+            where id = $1`,
+          [version.id, info.size, info.contentType],
+        );
+
+        const counts = await tx.one<{ photo_count: number; required_photo_count: number }>(
+          `select photo_count, required_photo_count from ocs.supervision_visits
+            where id = $1 and company_id = $2`,
+          [params.visitId, ctx.companyId],
+        );
+
+        return {
+          photoId: params.photoId,
+          byteSize: info.size,
+          confirmed: true,
+          photoCount: counts?.photo_count ?? 0,
+          requiredPhotoCount: counts?.required_photo_count ?? 0,
+        };
+      });
+    },
+  );
+
+  /** Photos for a visit, each with a fresh short-lived download URL. */
+  app.get('/v1/supervision/visits/:visitId/photos', { preHandler: authenticate }, async (req) => {
+    const p = principalOf(req);
+    const ctx = tenantOf(req);
+    requireCompanyRole(p, 'viewer');
+
+    const { visitId } = parse(z.object({ visitId: z.string().uuid() }), req.params, 'parameters');
+
+    const photos = await withTenant(ctx, async (tx) =>
+      tx.many<{
+        id: string; photo_type: string; caption: string | null; taken_at: string | null;
+        uploaded_at: string; distance_from_site_meters: number | null;
+        storage_key: string; upload_state: string; file_name: string;
+      }>(
+        `select ph.id, ph.photo_type::text, ph.caption, ph.taken_at, ph.uploaded_at,
+                ph.latitude, ph.longitude, ph.distance_from_site_meters, ph.sequence,
+                dv.storage_key, dv.upload_state, dv.file_name
+           from ocs.supervision_visit_photos ph
+           join ocs.documents d on d.id = ph.document_id
+           join ocs.document_versions dv on dv.id = d.current_version_id
+          where ph.visit_id = $1 and ph.company_id = $2
+          order by ph.sequence, ph.created_at`,
+        [visitId, ctx.companyId],
+      ),
+    );
+
+    // URLs are minted per request and expire in minutes, so a link that leaks
+    // out of a report is dead before it is useful.
+    const withUrls = await Promise.all(
+      photos.map(async (photo) => {
+        if (photo.upload_state !== 'uploaded') {
+          return { ...photo, url: null, pending: true };
+        }
+        try {
+          const signed = await createSignedDownloadUrl(photo.storage_key, { expiresInSeconds: 600 });
+          return { ...photo, url: signed.url, pending: false };
+        } catch {
+          return { ...photo, url: null, pending: false, unavailable: true };
+        }
+      }),
+    );
+
+    return { data: withUrls.map(({ storage_key, ...rest }) => rest) };
+  });
+
+  app.delete(
+    '/v1/supervision/visits/:visitId/photos/:photoId',
+    { preHandler: authenticate },
+    async (req) => {
+      const p = principalOf(req);
+      const ctx = tenantOf(req);
+      requirePlatformRole(p, 'staff');
+
+      const params = parse(
+        z.object({ visitId: z.string().uuid(), photoId: z.string().uuid() }),
+        req.params,
+        'parameters',
+      );
+
+      return withTenant(ctx, async (tx) => {
+        const visit = await tx.one<{ status: string }>(
+          `select status::text from ocs.supervision_visits
+            where id = $1 and company_id = $2`,
+          [params.visitId, ctx.companyId],
+        );
+        if (!visit) throw notFound('Visit');
+
+        // Once signed off, the photo set is the record. Removing part of it
+        // afterwards would let a completed visit quietly fall below the
+        // evidence it was signed off on.
+        if (visit.status === 'completed') {
+          throw unprocessable(
+            'This visit is signed off; its photographic record can no longer be changed',
+          );
+        }
+
+        const row = await tx.one<{ id: string }>(
+          `delete from ocs.supervision_visit_photos
+            where id = $1 and visit_id = $2 and company_id = $3
+            returning id`,
+          [params.photoId, params.visitId, ctx.companyId],
+        );
+        if (!row) throw notFound('Photo');
+
+        await writeAudit(tx, {
+          companyId: ctx.companyId,
+          actorUserId: p.userId,
+          actorEmail: p.email,
+          action: 'supervision.visit_photo_removed',
+          entityType: 'supervision_visit',
+          entityId: params.visitId,
+          summary: 'Photo removed before sign-off',
+          requestId: req.id,
+        });
+
+        return { id: row.id, deleted: true };
+      });
+    },
+  );
+
+  /**
+   * The evidence pack for an engagement.
+   *
+   * This is the thing that gets produced when someone has to demonstrate that a
+   * job was genuinely supervised. Reads the security-invoker view from 0013, so
+   * tenant isolation still applies.
+   */
+  app.get('/v1/supervision/engagements/:id/evidence', { preHandler: authenticate }, async (req) => {
+    const p = principalOf(req);
+    const ctx = tenantOf(req);
+    requireCompanyRole(p, 'admin');
+
+    const { id } = parse(z.object({ id: z.string().uuid() }), req.params, 'parameters');
+
+    return withTenant(ctx, async (tx) => {
+      const rows = await tx.many(
+        `select * from ocs.supervision_evidence
+          where engagement_id = $1 and company_id = $2
+          order by visit_id nulls last`,
+        [id, ctx.companyId],
+      );
+      if (rows.length === 0) throw notFound('Engagement');
+
+      const totals = await tx.one<{ visits: string; completed: string; photos: string }>(
+        `select count(v.id)::text as visits,
+                count(v.id) filter (where v.status = 'completed')::text as completed,
+                coalesce(sum(v.photo_count), 0)::text as photos
+           from ocs.supervision_visits v
+          where v.engagement_id = $1 and v.company_id = $2`,
+        [id, ctx.companyId],
+      );
+
+      return {
+        engagementId: id,
+        visits: rows,
+        totals: {
+          visits: Number(totals?.visits ?? 0),
+          completed: Number(totals?.completed ?? 0),
+          photographs: Number(totals?.photos ?? 0),
+        },
+        generatedAt: new Date().toISOString(),
+      };
+    });
   });
 
   // ---------------------------------------------------------------------------

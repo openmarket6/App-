@@ -25,6 +25,8 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
 # Migrations are read at runtime by `npm run migrate`.
 COPY db ./db
+# The API serves the portal and intake form, so the frontend ships in the image.
+COPY public ./public
 
 # Run as a non-root user. The node image ships one; a process that does not
 # need root should not have it.
