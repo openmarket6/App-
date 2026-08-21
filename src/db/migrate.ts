@@ -21,6 +21,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { existsSync, readFileSync } from 'node:fs';
 import pg from 'pg';
 
 const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../db/migrations');
@@ -74,7 +75,18 @@ async function run(mode: 'up' | 'status'): Promise<void> {
     connectionString,
     ...(connectionString.includes('localhost') || connectionString.includes('127.0.0.1')
       ? {}
-      : { ssl: { rejectUnauthorized: true } }),
+      : {
+          ssl: (() => {
+            const caPath = process.env.DATABASE_CA_CERT_PATH ?? process.env.NODE_EXTRA_CA_CERTS;
+            if (caPath && existsSync(caPath)) {
+              return { ca: readFileSync(caPath, 'utf8'), rejectUnauthorized: true };
+            }
+            if (process.env.DATABASE_SSL_INSECURE === 'true') {
+              return { rejectUnauthorized: false };
+            }
+            return { rejectUnauthorized: true };
+          })(),
+        }),
   });
   await client.connect();
 

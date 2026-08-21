@@ -12,6 +12,7 @@
  * Keeping them separate is what stops a bug in a route handler from reaching
  * another customer's rows. Route code must never import servicePool.
  */
+import { existsSync, readFileSync } from 'node:fs';
 import pg from 'pg';
 import { env } from '../config/env.js';
 import { logger } from '../lib/logger.js';
@@ -41,7 +42,18 @@ function createPool(connectionString: string, name: string): pg.Pool {
     application_name: `ocs-${name}`,
     ...(connectionString.includes('localhost') || connectionString.includes('127.0.0.1')
       ? {}
-      : { ssl: { rejectUnauthorized: true } }),
+      : {
+          ssl: (() => {
+            const caPath = process.env.DATABASE_CA_CERT_PATH ?? process.env.NODE_EXTRA_CA_CERTS;
+            if (caPath && existsSync(caPath)) {
+              return { ca: readFileSync(caPath, 'utf8'), rejectUnauthorized: true };
+            }
+            if (process.env.DATABASE_SSL_INSECURE === 'true') {
+              return { rejectUnauthorized: false };
+            }
+            return { rejectUnauthorized: true };
+          })(),
+        }),
   });
 
   // An idle client erroring is normal (network blip, server restart). Log it
