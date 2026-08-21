@@ -1,0 +1,87 @@
+{
+  "currency": "USD",
+  "supervisorVisitCents": 15000,
+  "allTradesThreshold": 7,
+  "plans": [
+    {
+      "key": "OWN_LICENSE",
+      "name": "Bring your own license",
+      "kind": "per_permit",
+      "tradeCount": 0,
+      "pricePerPermitCents": 19900,
+      "monthlyPriceCents": 0,
+      "onboardingFeeCents": 0,
+      "complianceRetainerCents": 0
+    },
+    {
+      "key": "ONE_TRADE",
+      "name": "White Glove — 1 trade",
+      "kind": "white_glove",
+      "tradeCount": 1,
+      "pricePerPermitCents": 0,
+      "monthlyPriceCents": 150000,
+      "onboardingFeeCents": 100000,
+      "complianceRetainerCents": 200000
+    },
+    {
+      "key": "TWO_TRADES",
+      "name": "White Glove — 2 trades",
+      "kind": "white_glove",
+      "tradeCount": 2,
+      "pricePerPermitCents": 0,
+      "monthlyPriceCents": 275000,
+      "onboardingFeeCents": 125000,
+      "complianceRetainerCents": 250000
+    },
+    {
+      "key": "THREE_TRADES",
+      "name": "White Glove — 3 trades",
+      "kind": "white_glove",
+      "tradeCount": 3,
+      "pricePerPermitCents": 0,
+      "monthlyPriceCents": 400000,
+      "onboardingFeeCents": 150000,
+      "complianceRetainerCents": 300000
+    },
+    {
+      "key": "FOUR_TRADES",
+      "name": "White Glove — 4 trades",
+      "kind": "white_glove",
+      "tradeCount": 4,
+      "pricePerPermitCents": 0,
+      "monthlyPriceCents": 525000,
+      "onboardingFeeCents": 175000,
+      "complianceRetainerCents": 350000
+    },
+    {
+      "key": "FIVE_TRADES",
+      "name": "White Glove — 5 trades",
+      "kind": "white_glove",
+      "tradeCount": 5,
+      "pricePerPermitCents": 0,
+      "monthlyPriceCents": 650000,
+      "onboardingFeeCents": 200000,
+      "complianceRetainerCents": 400000
+    },
+    {
+      "key": "SIX_TRADES",
+      "name": "White Glove — 6 trades",
+      "kind": "white_glove",
+      "tradeCount": 6,
+      "pricePerPermitCents": 0,
+      "monthlyPriceCents": 800000,
+      "onboardingFeeCents": 225000,
+      "complianceRetainerCents": 450000
+    },
+    {
+      "key": "ALL_TRADES",
+      "name": "One-Stop All Trades",
+      "kind": "white_glove",
+      "tradeCount": 99,
+      "pricePerPermitCents": 0,
+      "monthlyPriceCents": 1000000,
+      "onboardingFeeCents": 250000,
+      "complianceRetainerCents": 500000
+    }
+  ]
+}

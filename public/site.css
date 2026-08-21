@@ -526,3 +526,56 @@ p  { margin: 0 0 1rem; }
   .footer-grid { grid-template-columns: 1fr; }
   .hero-actions .btn { width: 100%; }
 }
+
+/* --------------------------------------------------------- price table --- */
+
+/* Wide on a phone by nature: five columns of figures do not fold. Scrolling
+   the table alone is better than shrinking the numbers past legibility. */
+.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+.price-table {
+  width: 100%; min-width: 600px; border-collapse: collapse;
+  background: var(--paper); border: 1px solid var(--line);
+  border-radius: var(--radius); overflow: hidden;
+  box-shadow: var(--shadow);
+}
+.price-table thead th {
+  text-align: left; padding: 1rem 1.15rem; font-size: .84rem;
+  text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+  background: var(--sand-deep); border-bottom: 1px solid var(--line);
+  font-weight: 700; vertical-align: bottom;
+}
+.price-table thead th span {
+  display: block; text-transform: none; letter-spacing: 0;
+  font-weight: 500; font-size: .82rem; opacity: .85;
+}
+.price-table tbody th {
+  text-align: left; padding: .95rem 1.15rem; font-weight: 600;
+  color: var(--navy); font-size: .98rem;
+}
+.price-table tbody th span {
+  display: block; font-weight: 500; font-size: .84rem; color: var(--muted);
+}
+.price-table td {
+  padding: .95rem 1.15rem; font-size: .98rem; color: var(--ink);
+  white-space: nowrap;
+}
+.price-table td b { font-size: 1.1rem; color: var(--navy); }
+.price-table td span { color: var(--muted); font-size: .88rem; }
+.price-table tbody tr + tr th,
+.price-table tbody tr + tr td { border-top: 1px solid var(--line); }
+.price-table tbody tr:hover { background: var(--sand); }
+
+.price-table tr.is-featured { background: var(--amber-wash); }
+.price-table tr.is-featured:hover { background: var(--amber-wash); }
+.price-table tr.is-featured th,
+.price-table tr.is-featured td { border-top: 2px solid var(--amber); }
+.price-table tr.is-featured td b { color: var(--amber-dark); }
+
+/* Two headline plans side by side, above the tier table. */
+.two-up {
+  display: grid; gap: 1.5rem;
+  grid-template-columns: repeat(auto-fit, minmax(310px, 1fr));
+  align-items: start;
+}
+.two-up .plan h2 { font-size: 1.5rem; margin-bottom: .35rem; }

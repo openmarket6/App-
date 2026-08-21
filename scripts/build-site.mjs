@@ -12,9 +12,24 @@
  *
  *   node scripts/build-site.mjs
  */
-import { writeFile, mkdir } from 'node:fs/promises';
+import { writeFile, mkdir, readFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+/**
+ * Prices come from src/domain/pricing.json, the same file the billing engine
+ * reads. A marketing page quoting a number the system does not charge is a
+ * promise somebody has to honour, so there is exactly one copy of the table.
+ */
+const PRICING = JSON.parse(
+  await readFile(
+    join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'domain', 'pricing.json'),
+    'utf8',
+  ),
+);
+
+const money = (cents) =>
+  '$' + (cents / 100).toLocaleString('en-US', { maximumFractionDigits: 0 });
 
 const PUBLIC_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
@@ -685,121 +700,219 @@ const howItWorks = layout({
 // ---------------------------------------------------------------------------
 // Pricing
 //
-// PLACEHOLDER FIGURES. Replace the `price` and `unit` values below with the
-// real numbers before this page is shown to a prospect -- a wrong price on a
-// public page is a promise you have to keep.
+// Figures come from src/domain/pricing.json. Every charge is shown as its own
+// line rather than rolled into one number, because that is how they are billed
+// and a prospect who discovers a second charge later stops trusting the first.
 // ---------------------------------------------------------------------------
 
-const PLANS = [
-  {
-    name: 'Per permit',
-    price: 'From $—',
-    unit: 'per permit',
-    blurb: 'For contractors who need a hand on individual jobs.',
-    features: [
-      'Permit filed and tracked to closeout',
-      'Corrections handled for you',
-      'Inspections scheduled and recorded',
-      'Contractor sign-in to watch progress',
-    ],
-    cta: 'Book a demo',
-    featured: false,
-  },
-  {
-    name: 'Licensed & supervised',
-    price: 'From $—',
-    unit: 'per month',
-    blurb:
-      'The full white-glove service: our license, our supervisor, our permit techs.',
-    features: [
-      'Work qualified under our Florida license',
-      'Named supervisor assigned to every job',
-      'On-site check-ins and photographic record',
-      'Unlimited permits within your agreed volume',
-      'Drafting, notary and document signing included',
-      'Priority handling on corrections',
-    ],
-    cta: 'Book a demo',
-    featured: true,
-  },
-  {
-    name: 'Volume',
-    price: 'Custom',
-    unit: '',
-    blurb: 'For builders and multi-crew operations running across counties.',
-    features: [
-      'Everything in Licensed & supervised',
-      'Multiple crews and counties',
-      'Dedicated permit tech',
-      'Reporting across your whole pipeline',
-      'Onboarding for your office staff',
-    ],
-    cta: 'Talk to us',
-    featured: false,
-  },
-];
+const planByKey = Object.fromEntries(PRICING.plans.map((p) => [p.key, p]));
+const ownLicense = planByKey.OWN_LICENSE;
+const allTrades = planByKey.ALL_TRADES;
+const tradeTiers = PRICING.plans.filter(
+  (p) => p.kind === 'white_glove' && p.key !== 'ALL_TRADES',
+);
 
 const pricing = layout({
   slug: '/pricing',
   title: 'Pricing — Florida Permitting, Licensing & Supervision | One Contractor Solutions',
   description:
-    'Simple pricing for Florida permit expediting, contractor licensing and on-site ' +
-    'qualifier supervision. Priced by trade, county and permit volume.',
+    `Bring your own license at ${money(ownLicense.pricePerPermitCents)} per permit, or go White Glove ` +
+    'from $1,500 a month with our license, our qualifier and our supervisors on your site.',
   keywords:
-    'Florida permit expediting cost, contractor licensing pricing, permit service pricing Florida, ' +
-    'qualifier supervision cost',
+    'Florida permit expediting cost, contractor licensing pricing, qualifier supervision cost, ' +
+    'white glove permitting Florida, permit service pricing',
+  ld: [FAQ_LD],
   body: `
   <section class="page-head">
     <div class="wrap wrap-narrow">
       <p class="eyebrow">Pricing</p>
-      <h1>Priced around how you actually work.</h1>
+      <h1>Two ways to work with us.</h1>
       <p class="lede">
-        By the trade, the counties you file in and the volume you run — not by a
-        formula that punishes a good month.
+        Already licensed? Pay per permit. Need the license, the qualifier and the
+        supervision? That is White Glove, priced by how many trade classifications
+        you need.
       </p>
     </div>
   </section>
 
-  <section class="section" aria-labelledby="plans-title">
+  <section class="section" aria-labelledby="own-title">
     <div class="wrap">
-      <h2 class="sr-only" id="plans-title">Plans</h2>
-      <div class="plans">
-${PLANS.map(
-  (p) => `
-        <article class="plan${p.featured ? ' plan-featured' : ''}">
-          ${p.featured ? '<span class="plan-flag">Most contractors choose this</span>' : ''}
-          <h3>${esc(p.name)}</h3>
-          <p class="plan-price"><b>${esc(p.price)}</b>${p.unit ? ` <span>${esc(p.unit)}</span>` : ''}</p>
-          <p class="plan-blurb">${esc(p.blurb)}</p>
+      <div class="two-up">
+        <article class="plan">
+          <h2 id="own-title">${esc(ownLicense.name)}</h2>
+          <p class="plan-price">
+            <b>${money(ownLicense.pricePerPermitCents)}</b> <span>per permit</span>
+          </p>
+          <p class="plan-blurb">
+            You hold the license. We do the permitting: filing, corrections,
+            inspections and closeout, on the same platform our permit techs use.
+          </p>
           <ul class="ticks">
-${p.features.map((f) => `            <li>${esc(f)}</li>`).join('\n')}
+            <li>No monthly fee</li>
+            <li>No onboarding fee</li>
+            <li>No compliance retainer</li>
+            <li>Your own sign-in to track every permit</li>
           </ul>
-          <a class="btn ${p.featured ? 'btn-primary' : 'btn-outline'} btn-block" href="/demo">${esc(p.cta)}</a>
-        </article>`,
-).join('')}
+          <a class="btn btn-outline btn-block" href="/demo">Book a demo</a>
+        </article>
+
+        <article class="plan plan-featured">
+          <span class="plan-flag">Our full service</span>
+          <h2>White Glove</h2>
+          <p class="plan-price">
+            <b>From ${money(tradeTiers[0].monthlyPriceCents)}</b> <span>a month</span>
+          </p>
+          <p class="plan-blurb">
+            Our license, our qualifier and our own supervisors on your site — so you
+            can take work you are not licensed for, lawfully.
+          </p>
+          <ul class="ticks">
+            <li>Work qualified under our Florida license</li>
+            <li>A named supervisor assigned before anything is filed</li>
+            <li>On-site check-ins and a photographic record</li>
+            <li>Unlimited permits within your agreed volume</li>
+            <li>Drafting, notary and document signing included</li>
+          </ul>
+          <a class="btn btn-primary btn-block" href="#tiers">See the tiers</a>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="section section-alt" id="tiers" aria-labelledby="tiers-title">
+    <div class="wrap">
+      <div class="section-head">
+        <h2 id="tiers-title">White Glove, by trade classification</h2>
+        <p>
+          Priced by how many classifications you need to work under. Every charge is
+          listed separately — there is nothing rolled up out of sight.
+        </p>
+      </div>
+
+      <div class="table-scroll">
+        <table class="price-table">
+          <caption class="sr-only">White Glove pricing by number of trade classifications</caption>
+          <thead>
+            <tr>
+              <th scope="col">Classifications</th>
+              <th scope="col">Monthly service</th>
+              <th scope="col">Onboarding <span>one-time</span></th>
+              <th scope="col">Compliance retainer <span>held on account</span></th>
+            </tr>
+          </thead>
+          <tbody>
+${tradeTiers
+  .map(
+    (p) => `            <tr>
+              <th scope="row">${p.tradeCount} ${p.tradeCount === 1 ? 'trade' : 'trades'}</th>
+              <td><b>${money(p.monthlyPriceCents)}</b><span>/mo</span></td>
+              <td>${money(p.onboardingFeeCents)}</td>
+              <td>${money(p.complianceRetainerCents)}</td>
+            </tr>`,
+  )
+  .join('\n')}
+            <tr class="is-featured">
+              <th scope="row">
+                ${esc(allTrades.name)}
+                <span>${PRICING.allTradesThreshold}+ classifications</span>
+              </th>
+              <td><b>${money(allTrades.monthlyPriceCents)}</b><span>/mo</span></td>
+              <td>${money(allTrades.onboardingFeeCents)}</td>
+              <td>${money(allTrades.complianceRetainerCents)}</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
 
       <p class="pricing-note">
-        Jurisdiction fees are what the county or city charges and are passed through
-        at cost. We will always tell you the number before we file.
+        Need ${PRICING.allTradesThreshold} or more classifications? That is the
+        One-Stop All Trades plan — it costs less than stacking individual trades and
+        covers everything we are licensed for.
       </p>
     </div>
   </section>
 
-  <section class="section section-alt" aria-labelledby="included-title">
+  <section class="section" aria-labelledby="charges-title">
+    <div class="wrap">
+      <div class="section-head">
+        <h2 id="charges-title">What appears on your invoice</h2>
+        <p>
+          Five separate lines, always. You should never have to work out what a number
+          is made of.
+        </p>
+      </div>
+
+      <div class="cards">
+        <article class="card">
+          <h3>Monthly service fee</h3>
+          <p>Your White Glove tier. Billed monthly, and nothing else is hidden inside it.</p>
+        </article>
+        <article class="card">
+          <h3>Onboarding fee</h3>
+          <p>
+            Charged once, when you first activate a White Glove plan. Move up a tier
+            later and you pay only the difference — never the whole fee twice.
+          </p>
+        </article>
+        <article class="card">
+          <h3>Compliance retainer</h3>
+          <p>
+            Held on account against the licensing risk we carry for you. Kept on its
+            own ledger, separate from what you pay us for the service.
+          </p>
+        </article>
+        <article class="card">
+          <h3>Government fees</h3>
+          <p>
+            What the county or city charges, passed through at cost. We tell you the
+            number before we file.
+          </p>
+        </article>
+        <article class="card">
+          <h3>Supervisor visits</h3>
+          <p>
+            <b>${money(PRICING.supervisorVisitCents)}</b> per completed visit, per active
+            job site. Charged when the visit is done and the record is filed — not before.
+          </p>
+        </article>
+        <article class="card">
+          <h3>Nothing else</h3>
+          <p>
+            No per-correction charges, no per-inspection charges, no fee for asking us
+            a question.
+          </p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="section section-alt" aria-labelledby="changes-title">
     <div class="wrap wrap-narrow">
       <div class="section-head">
-        <h2 id="included-title">What is always included</h2>
-        <p>Whichever way you work with us.</p>
+        <h2 id="changes-title">Moving between tiers</h2>
+        <p>Businesses change. The pricing should not punish that.</p>
       </div>
-      <ul class="ticks ticks-two">
-        <li>Your own sign-in to the platform</li>
-        <li>Every permit tracked to closeout</li>
-        <li>Correction cycles logged and worked</li>
-        <li>Inspection results and re-inspections</li>
-        <li>Document storage against the job</li>
-        <li>A real person who knows your account</li>
+      <ul class="ticks">
+        <li>
+          <b>Adding trades:</b> you pay only the difference between the onboarding fee
+          you already paid and the one for your new tier.
+        </li>
+        <li>
+          <b>Your retainer moves with you:</b> upgrading raises it to the new tier's
+          level, because the licensing risk we carry has gone up.
+        </li>
+        <li>
+          <b>Dropping trades:</b> your monthly fee falls straight away. Onboarding fees
+          already paid are not refunded, and any reduction in your retainer is reviewed
+          by us first.
+        </li>
+        <li>
+          <b>Your price is locked to your agreement:</b> we record the exact figures on
+          the day you sign, so a later change to our published pricing does not move
+          what you are charged.
+        </li>
       </ul>
+      <a class="btn btn-primary" href="/demo">Talk through your tier</a>
     </div>
   </section>
 
@@ -807,15 +920,14 @@ ${faqSection()}
 
   <section class="cta">
     <div class="wrap cta-inner">
-      <h2>Get a number for your situation</h2>
-      <p>Tell us the trade and the counties. You will have a straight answer on the call.</p>
+      <h2>Not sure which tier you need?</h2>
+      <p>Tell us the trades and the counties. We will tell you straight, on the call.</p>
       <div class="hero-actions">
         <a class="btn btn-primary btn-lg" href="/demo">Book a demo</a>
       </div>
     </div>
   </section>
 `,
-  ld: [FAQ_LD],
 });
 
 // ---------------------------------------------------------------------------
