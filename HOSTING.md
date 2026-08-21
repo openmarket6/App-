@@ -196,20 +196,45 @@ almost always the pooler (must be **Session**) or a password typo.
 
 ---
 
-## Step 5 — Open the app
+## Step 5 — Open the app and create your account
 
-**Just visit your Render URL.** The portal is served there:
+**Visit your Render URL.** Your existing 1 Contractor Solutions application is
+served there:
 
-- `https://YOUR-API-URL.onrender.com/` — the contractor portal
-- `https://YOUR-API-URL.onrender.com/intake` — the permit intake form alone
+- `https://YOUR-API-URL.onrender.com/` — the app
+- `https://YOUR-API-URL.onrender.com/intake` — the standalone permit intake form
 
-Create a user first: Supabase → **Authentication** → **Users** → **Add user**.
-Then sign in on the portal.
+The very first visit shows a **first-run setup form**, because the system has no
+administrator yet. Enter your email, your name, and a password of at least 12
+characters. That creates the first ADMIN account and signs you in.
 
-The first time, open **Connection settings** on the sign-in box and paste your
-**Supabase URL** and **anon key** (Supabase → Settings → API — the `anon` key,
-*not* `service_role`; anon is the one browsers are meant to use). Those are
-saved in your browser.
+> This setup screen works **once**. After an administrator exists it returns a
+> 409 and shows the normal sign-in box. Everyone else gets in by invitation:
+> **Users & access → Invite**. There is no self-service signup, by design.
+
+You do **not** need to create users in Supabase. Sign-in is email and password
+against this backend; Supabase provides the database and file storage.
+
+### The five roles
+
+| Role | What they see |
+|---|---|
+| **Administrator** | Everything: users, billing, credentials, connectors |
+| **Permit technician** | Day-to-day permit work across all contractors |
+| **Site supervisor** | Their assigned visits. Photographs the work and signs off. Cannot file permits or touch billing |
+| **Viewer** | Read-only across the firm |
+| **Contractor** | Only their own company's permits, documents and invoices |
+| *Awaiting authorization* | Nothing, until an administrator assigns a role |
+
+### What works tonight, and what does not
+
+Migrated to the new backend: **sign-in, dashboard, permits, contractors,
+jurisdictions, users and roles, supervision visits and photographs**.
+
+Not migrated yet: corrections, inspections, signing, notary, billing, Google
+Drive sync, connectors, admin. Those screens return a clear *"not migrated
+yet"* message rather than failing silently, and still work on your existing
+Netlify deployment. `GET /api/_migration-status` lists both sets.
 
 The first thing you will see is that the checklist on the right changes as you
 type. Set the county to Broward and the required document switches from Florida

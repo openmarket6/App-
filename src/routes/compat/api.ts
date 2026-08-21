@@ -31,7 +31,11 @@ import { writeAudit } from '../../lib/audit.js';
 import { badRequest, forbidden, notFound, AppError } from '../../lib/errors.js';
 import { publicUser, newInviteToken, type UserRow } from '../../auth/native.js';
 import { roleCatalogue, isStaff, ROLES, type Role } from '../../domain/capabilities.js';
-import { distanceMeters } from '../../domain/geo.js';
+import {
+  PERMIT_STAGES, emptyPipeline, toStage, isActiveStage, toTrade,
+  assessRisk, toPlatformLabel, toIntegrationTier, daysInStage,
+  type PermitStage,
+} from './mapping.js';
 import { logger } from '../../lib/logger.js';
 
 /**
@@ -78,50 +82,205 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
   // Dashboard
   // ---------------------------------------------------------------------------
 
+  /**
+   * GET /api/dashboard
+   *
+   * Shape matches the previous implementation exactly, because the frontend
+   * reads specific field names out of it. In particular `pipelineByStage` must
+   * carry EVERY stage key including the zero ones — the frontend indexes
+   * buckets by name, and a missing key renders a blank page rather than a
+   * smaller dashboard.
+   */
   app.get('/api/dashboard', auth, async (req) => {
     const q = parse(
       z.object({ clientId: z.string().uuid().optional() }),
       req.query,
       'query',
     );
+    const isClientView = req.apiAuth!.role === 'CLIENT';
 
     return scoped(req, async (tx, companyId) => {
-      const counts = await tx.one<Record<string, string>>(
-        `select
-           (select count(*) from ocs.permits p
-             where p.deleted_at is null
-               and p.status not in ('closed','expired','withdrawn','rejected')
-               ${companyId ? 'and p.company_id = $1' : ''})::text as open_permits,
-           (select count(*) from ocs.permits p
-             where p.deleted_at is null and p.status = 'corrections_required'
-               ${companyId ? 'and p.company_id = $1' : ''})::text as corrections,
-           (select count(*) from ocs.permit_applications a
-             where a.deleted_at is null and a.status in ('draft','info_requested')
-               ${companyId ? 'and a.company_id = $1' : ''})::text as open_applications,
-           (select count(*) from ocs.supervision_engagements e
-             where e.deleted_at is null and e.status = 'active'
-               ${companyId ? 'and e.company_id = $1' : ''})::text as active_supervision,
-           (select count(*) from ocs.supervision_visits v
-             where v.is_mandatory and v.status not in ('completed','waived','cancelled')
-               ${companyId ? 'and v.company_id = $1' : ''})::text as outstanding_visits,
-           (select count(*) from ocs.licenses l
-             where l.deleted_at is null and l.expires_on is not null
-               and l.expires_on < current_date
-               ${companyId ? 'and l.company_id = $1' : ''})::text as expired_credentials`,
-        companyId ? [companyId] : [],
+      const permits = await tx.many<{
+        id: string; company_id: string; project_id: string | null;
+        permit_number: string | null; permit_type: string; status: string;
+        updated_at: string; expires_at: string | null; issued_at: string | null;
+        municipality_id: string | null; municipality_name: string | null;
+        platform: string | null; status_check_enabled: boolean;
+        adapter_verified_at: string | null;
+        project_name: string | null; project_address: string | null;
+        client_name: string | null;
+      }>(
+        `select p.id, p.company_id, p.project_id, p.permit_number, p.permit_type,
+                p.status::text, p.updated_at, p.expires_at, p.issued_at,
+                p.municipality_id,
+                m.name as municipality_name, m.platform::text as platform,
+                m.status_check_enabled, m.adapter_verified_at,
+                pr.name as project_name, pr.address_line1 as project_address,
+                c.name as client_name
+           from ocs.permits p
+           left join ocs.municipalities m on m.id = p.municipality_id
+           left join ocs.projects pr on pr.id = p.project_id
+           left join ocs.companies c on c.id = p.company_id
+          where p.deleted_at is null
+            and ($1::uuid is null or p.company_id = $1::uuid)
+          limit 5000`,
+        [companyId],
       );
 
+      const enriched = permits.map((p) => {
+        const stage = toStage(p.status);
+        return {
+          row: p,
+          stage,
+          active: isActiveStage(stage),
+          risk: assessRisk({ stage, updatedAt: p.updated_at, expiresAt: p.expires_at }),
+        };
+      });
+
+      const pipelineByStage = emptyPipeline();
+      for (const e of enriched) pipelineByStage[e.stage] += 1;
+
+      const atRisk = enriched.filter(
+        (e) => e.risk.level === 'AT_RISK' || e.risk.level === 'CRITICAL',
+      );
+
+      // First-pass approval: of the permits that reached a decision, how many
+      // did so without ever needing corrections. Read from the immutable
+      // status history rather than a counter that could drift.
+      const decisionStats = await tx.one<{ decided: string; first_pass: string }>(
+        `with decided as (
+           select p.id
+             from ocs.permits p
+            where p.deleted_at is null
+              and ($1::uuid is null or p.company_id = $1::uuid)
+              and (p.issued_at is not null
+                   or p.status in ('approved','issued','inspections','closed'))
+         )
+         select count(*)::text as decided,
+                count(*) filter (
+                  where not exists (
+                    select 1 from ocs.permit_status_history h
+                     where h.permit_id = decided.id
+                       and h.to_status = 'corrections_required')
+                )::text as first_pass
+           from decided`,
+        [companyId],
+      );
+
+      const decided = Number(decisionStats?.decided ?? 0);
+      const firstPass = Number(decisionStats?.first_pass ?? 0);
+
+      const openCorrections = enriched.filter((e) => e.stage === 'CORRECTIONS_REQUIRED').length;
+
+      // Supervision visits scheduled in the week ahead stand in for the
+      // inspections figure until the inspections area is migrated. Named
+      // honestly in the response so it is not mistaken for jurisdiction
+      // inspections.
+      const upcoming = await tx.one<{ n: string }>(
+        `select count(*)::text as n
+           from ocs.supervision_visits v
+          where v.status = 'scheduled'
+            and v.scheduled_for between now() and now() + interval '7 days'
+            and ($1::uuid is null or v.company_id = $1::uuid)`,
+        [companyId],
+      );
+
+      // Busiest jurisdictions.
+      const byJurisdiction = new Map<string, typeof enriched>();
+      for (const e of enriched) {
+        const key = e.row.municipality_id ?? 'unknown';
+        const list = byJurisdiction.get(key);
+        if (list) list.push(e);
+        else byJurisdiction.set(key, [e]);
+      }
+
+      const busiestJurisdictions = [...byJurisdiction.entries()]
+        .sort((a, b) => b[1].length - a[1].length)
+        .slice(0, 8)
+        .map(([id, rows]) => {
+          const first = rows[0]!.row;
+          return {
+            jurisdictionId: id,
+            name: first.municipality_name ?? 'Unknown jurisdiction',
+            platform: toPlatformLabel(first.platform),
+            integrationTier: toIntegrationTier(first),
+            paperOnly: !first.platform || first.platform === 'none',
+            permitCount: rows.length,
+            activeCount: rows.filter((r) => r.active).length,
+            // Null rather than a plausible-looking number: this backend has not
+            // accumulated review-time observations yet, and inventing one would
+            // make the dashboard authoritative about something it does not know.
+            medianReviewDays: null,
+            reviewSampleSize: 0,
+            firstPassApprovalRate: null,
+          };
+        });
+
+      const needsAttention = atRisk
+        .map((e) => ({
+          permitId: e.row.id,
+          agencyRecordId: e.row.permit_number,
+          permitType: e.row.permit_type,
+          stage: e.stage,
+          serviceLine: 'EXPEDITING',
+          trade: toTrade(e.row.permit_type),
+          projectName: e.row.project_name,
+          projectAddress: e.row.project_address,
+          clientId: e.row.company_id,
+          clientName: e.row.client_name,
+          jurisdictionId: e.row.municipality_id,
+          jurisdictionName: e.row.municipality_name,
+          risk: e.risk.level,
+          score: e.risk.score,
+          daysInStage: e.risk.daysInStage,
+          baselineDays: e.risk.baselineDays,
+          reasons: e.risk.reasons,
+        }))
+        .sort((a, b) => b.score - a.score);
+
+      const kpis: Record<string, number | null> = {
+        activePermits: enriched.filter((e) => e.active).length,
+        atRisk: atRisk.length,
+        openCorrections,
+        readyToSubmit: pipelineByStage.READY_TO_SUBMIT,
+        medianReviewDays: null,
+        reviewSampleSize: 0,
+        firstPassApprovalRate: decided === 0 ? null : Math.round((firstPass / decided) * 100),
+        firstPassDecidedCount: decided,
+        inspectionsThisWeek: Number(upcoming?.n ?? 0),
+      };
+
+      if (isClientView) {
+        kpis['openTickets'] = 0;
+      } else {
+        const invoices = await tx.one<{ outstanding: string; overdue: string }>(
+          `select
+             coalesce(sum(greatest(0, total_cents - amount_paid_cents)), 0)::text as outstanding,
+             count(*) filter (where status = 'past_due')::text as overdue
+             from ocs.invoices
+            where deleted_at is null
+              and status in ('open','past_due')
+              and ($1::uuid is null or company_id = $1::uuid)`,
+          [companyId],
+        );
+        kpis['outstandingInvoiceCents'] = Number(invoices?.outstanding ?? 0);
+        kpis['overdueInvoices'] = Number(invoices?.overdue ?? 0);
+      }
+
       return {
-        counts: {
-          openPermits: Number(counts?.['open_permits'] ?? 0),
-          correctionsRequired: Number(counts?.['corrections'] ?? 0),
-          openApplications: Number(counts?.['open_applications'] ?? 0),
-          activeSupervision: Number(counts?.['active_supervision'] ?? 0),
-          outstandingVisits: Number(counts?.['outstanding_visits'] ?? 0),
-          expiredCredentials: Number(counts?.['expired_credentials'] ?? 0),
+        scope: companyId ? 'client' : 'firm',
+        clientId: companyId,
+        generatedAt: new Date().toISOString(),
+        kpis,
+        pipelineByStage,
+        busiestJurisdictions,
+        needsAttention,
+        // Names the areas this backend can answer for, so a screen reading a
+        // figure that is not migrated yet can say so rather than show a zero.
+        _migrationNote: {
+          inspectionsThisWeek: 'Counts supervision visits; jurisdiction inspections are not migrated yet.',
+          medianReviewDays: 'Not yet measured on this backend.',
         },
-        role: req.apiAuth!.role,
-        scopedToClientId: companyId,
       };
     }, q.clientId ?? null);
   });
@@ -158,7 +317,7 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
     const q = parse(
       z.object({
         clientId: z.string().uuid().optional(),
-        status: z.string().max(40).optional(),
+        stage: z.enum(PERMIT_STAGES).optional(),
         limit: z.coerce.number().int().min(1).max(200).default(100),
       }),
       req.query,
@@ -166,25 +325,49 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
     );
 
     return scoped(req, async (tx, companyId) => {
-      const rows = await tx.many(
+      const rows = await tx.many<{
+        id: string; status: string; permit_type: string; updated_at: string;
+        expires_at: string | null; [k: string]: unknown;
+      }>(
         `select p.id, p.company_id as "clientId", p.project_id as "projectId",
-                p.permit_number as "permitNumber", p.permit_type as "permitType",
+                p.permit_number as "agencyRecordId", p.permit_type as "permitType",
                 p.status::text, p.scope_of_work as "scopeOfWork",
-                p.applied_at, p.submitted_at, p.issued_at, p.expires_at,
-                p.last_checked_at, p.created_at,
+                p.applied_at as "appliedAt", p.submitted_at as "submittedAt",
+                p.issued_at as "issuedAt", p.expires_at as "expiresAt",
+                p.last_checked_at as "lastCheckedAt", p.created_at as "createdAt",
+                p.updated_at, p.municipality_id as "jurisdictionId",
                 m.name as "jurisdictionName",
+                pr.name as "projectName",
                 c.name as "clientName"
            from ocs.permits p
            left join ocs.municipalities m on m.id = p.municipality_id
+           left join ocs.projects pr on pr.id = p.project_id
            left join ocs.companies c on c.id = p.company_id
           where p.deleted_at is null
             and ($1::uuid is null or p.company_id = $1::uuid)
-            and ($2::text is null or p.status::text = $2)
           order by p.created_at desc
-          limit $3`,
-        [companyId, q.status ?? null, q.limit],
+          limit $2`,
+        [companyId, q.limit],
       );
-      return { permits: rows, total: rows.length };
+
+      // `stage` is the field the frontend reads; `status` is this schema's own
+      // vocabulary. Both are returned so neither side has to guess.
+      const permits = rows
+        .map((r) => {
+          const stage = toStage(r.status);
+          return {
+            ...r,
+            stage,
+            trade: toTrade(r.permit_type),
+            serviceLine: 'EXPEDITING',
+            correctionCycles: 0,
+            risk: assessRisk({ stage, updatedAt: r.updated_at, expiresAt: r.expires_at }),
+            daysInStage: daysInStage(r.updated_at),
+          };
+        })
+        .filter((r) => !q.stage || r.stage === q.stage);
+
+      return { permits, total: permits.length };
     }, q.clientId ?? null);
   });
 
@@ -194,16 +377,27 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/api/jurisdictions', { preHandler: [requireApiAuth, requireCapability('jurisdiction:read')] }, async (req) => {
     return scoped(req, async (tx) => {
-      const rows = await tx.many(
-        `select id, name, kind::text, county, state, portal_url as "portalUrl",
-                platform::text, status_check_enabled as "statusCheckEnabled",
-                adapter_verified_at as "verifiedAt"
+      const rows = await tx.many<Record<string, unknown>>(
+        `select id, id as "jurisdictionId", name, kind::text, county, state,
+                portal_url as "portalUrl", platform::text as platform,
+                status_check_enabled, adapter_verified_at,
+                status_check_enabled as "statusCheckEnabled"
            from ocs.municipalities
           where is_active
           order by kind, name
           limit 1000`,
       );
-      return { jurisdictions: rows, total: rows.length };
+
+      const jurisdictions = rows.map((r) => ({
+        ...r,
+        platform: toPlatformLabel(r.platform as string | null),
+        integrationTier: toIntegrationTier(r as never),
+        paperOnly: !r.platform || r.platform === 'none',
+        medianReviewDays: null,
+        reviewSampleSize: 0,
+      }));
+
+      return { jurisdictions, total: jurisdictions.length };
     });
   });
 
@@ -505,4 +699,3 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
   }));
 }
 
-export { distanceMeters };

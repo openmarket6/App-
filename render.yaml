@@ -92,6 +92,20 @@ services:
       - key: EMAIL_FROM
         sync: false
 
+      # --- Authentication ---------------------------------------------------
+      # Email/password sign-in for the existing React frontend. Render generates
+      # both and stores them encrypted, so no secret is ever committed.
+      #
+      # Two separate values on purpose: an access token leaked from a browser
+      # must not be usable to mint refresh tokens.
+      #
+      # Changing either signs everyone out. Intended behaviour, but do not
+      # rotate them casually.
+      - key: AUTH_JWT_SECRET
+        generateValue: true
+      - key: AUTH_REFRESH_SECRET
+        generateValue: true
+
       # --- Security ---------------------------------------------------------
       - key: INTEGRATION_ENCRYPTION_KEY
         generateValue: true  # Render generates and stores it; never seen in git
@@ -142,3 +156,4 @@ services:
         sync: false
       - key: INTEGRATION_ENCRYPTION_KEY
         sync: false          # must match the API's value exactly
+      # The worker serves no sign-ins, so it needs no auth secrets.
