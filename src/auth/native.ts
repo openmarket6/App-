@@ -30,6 +30,7 @@ import { SignJWT, jwtVerify } from 'jose';
 import { env, nativeAuthConfigured } from '../config/env.js';
 import { withServiceContext } from '../db/tenant.js';
 import { unauthorized, serviceUnavailable, badRequest } from '../lib/errors.js';
+import { logger } from '../lib/logger.js';
 import type { Role } from '../domain/capabilities.js';
 
 export const REFRESH_COOKIE = 'flph_rt';
@@ -187,27 +188,89 @@ export async function issueRefreshToken(
 }
 
 /**
+ * How long a just-rotated refresh token stays usable.
+ *
+ * Rotation revokes the presented token, which is correct: a stolen token is
+ * then usable at most once. But it makes concurrent refreshes mutually
+ * exclusive, and concurrency here is completely ordinary. Two tabs open on the
+ * permit board both wake with no access token and both refresh with the same
+ * cookie; one wins, and without this window the other is told its session
+ * expired and dumps the user back to a sign-in screen mid-task.
+ *
+ * A retried request on a flaky phone connection produces the same collision.
+ *
+ * Sixty seconds is long enough to cover a slow network and short enough that a
+ * stolen token is still near-useless, and reuse AFTER the window is treated as
+ * theft rather than ignored -- which is a stronger position than before, when a
+ * second use was merely refused and nothing was done about it.
+ */
+const REFRESH_REUSE_GRACE_SECONDS = 60;
+
+/**
  * Exchange a refresh token for the user it belongs to.
  *
- * Rotates: the presented token is revoked and the caller issues a new one.
- * Rotation means a stolen refresh token is usable at most once, and the
- * legitimate user's next refresh fails visibly rather than the theft going
- * unnoticed.
+ * Rotates: the presented token is revoked and the caller issues a new one, so
+ * a stolen refresh token is usable at most once.
+ *
+ * Reuse is judged by WHEN, not merely whether. Within the grace window above it
+ * is a race between the user's own tabs and is allowed. Outside it, the token
+ * was replaced long ago and is being presented by someone who should not have
+ * it, so every session for that account is destroyed -- including the thief's.
  */
 export async function consumeRefreshToken(raw: string): Promise<UserRow> {
   const user = await withServiceContext(
     async (tx) => {
-      const row = await tx.one<{ id: string; user_id: string; token_version: number }>(
-        `select id, user_id, token_version
+      const row = await tx.one<{
+        id: string;
+        user_id: string;
+        token_version: number;
+        expired: boolean;
+        revoked_recently: boolean;
+        revoked_long_ago: boolean;
+      }>(
+        `select id, user_id, token_version,
+                (expires_at <= now()) as expired,
+                (revoked_at is not null
+                  and revoked_at > now() - ($2 || ' seconds')::interval) as revoked_recently,
+                (revoked_at is not null
+                  and revoked_at <= now() - ($2 || ' seconds')::interval) as revoked_long_ago
            from ocs.refresh_tokens
-          where token_hash = $1
-            and revoked_at is null
-            and expires_at > now()`,
-        [hashToken(raw)],
+          where token_hash = $1`,
+        [hashToken(raw), String(REFRESH_REUSE_GRACE_SECONDS)],
       );
       if (!row) return null;
 
-      await tx.query(`update ocs.refresh_tokens set revoked_at = now() where id = $1`, [row.id]);
+      /**
+       * Presented well after it was rotated away. The legitimate holder moved
+       * on to a newer token, so whoever still has this one copied it. Ending
+       * every session is the only response that does not leave them logged in.
+       */
+      if (row.revoked_long_ago) {
+        await tx.query(
+          `update ocs.refresh_tokens set revoked_at = now()
+            where user_id = $1 and revoked_at is null`,
+          [row.user_id],
+        );
+        await tx.query(
+          `update ocs.app_users set token_version = token_version + 1 where id = $1`,
+          [row.user_id],
+        );
+        logger.warn(
+          { userId: row.user_id },
+          'refresh token reused after rotation; all sessions revoked',
+        );
+        return null;
+      }
+
+      if (row.expired) return null;
+
+      // Within the grace window this is a no-op, which is what makes the second
+      // tab's refresh succeed instead of ending its session.
+      await tx.query(
+        `update ocs.refresh_tokens set revoked_at = now()
+          where id = $1 and revoked_at is null`,
+        [row.id],
+      );
 
       const found = await tx.one<UserRow>(
         `select id, email, name, app_role, client_id, is_active, password_hash,
