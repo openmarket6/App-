@@ -73,6 +73,20 @@
   status = 200
   force = true
 
+# Which commit is actually serving.
+#
+# This one matters more than it looks. A failed Render build leaves the
+# PREVIOUS deploy running with health checks green, so /readyz answering does
+# not mean the API is current -- and the only other place the live commit
+# appears is the Render dashboard, behind a login. Proxying /version here puts
+# it on a domain an unattended check can reach without a browser or a
+# credential, which is the whole reason the endpoint exists.
+[[redirects]]
+  from = "/version"
+  to = "https://ocs-api-i654.onrender.com/version"
+  status = 200
+  force = true
+
 # -----------------------------------------------------------------------------
 # Clean URLs for the public marketing site.
 #
