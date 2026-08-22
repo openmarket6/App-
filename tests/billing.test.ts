@@ -227,6 +227,48 @@ describeIfDb('billing', () => {
       ).rejects.toThrow(/permission denied/i);
     });
 
+    it('records an approval against a change without rewriting the change', async () => {
+      /*
+       * A column-level grant, and the narrowness is the point. "Pending
+       * approval" means an approval gets written afterwards -- but the plan it
+       * moved between, the amounts, and who asked for it must stay fixed, so an
+       * approval can never quietly become a different change.
+       */
+      const subId = await newSubscription();
+      const c = client(ownerUrl!);
+      await c.connect();
+      try {
+        await c.query(
+          `insert into ocs.subscription_changes
+             (company_id, subscription_id, to_plan_key, to_trade_count,
+              retainer_delta_cents, requires_approval, pricing_snapshot)
+           values ($1, $2, 'ONE_TRADE', 1, -100000, true, $3::jsonb)`,
+          [ALPHA, subId, SNAP],
+        );
+      } finally {
+        await c.end();
+      }
+
+      // The approval is allowed.
+      await asTenant(appUrl!, { companyId: ALPHA }, async (t) => {
+        await t.query(
+          `update ocs.subscription_changes set approved_by = $1, approved_at = now()
+            where company_id = $2`,
+          [ALPHA_USER, ALPHA],
+        );
+      });
+
+      // Rewriting the change itself is not.
+      await expect(
+        asTenant(appUrl!, { companyId: ALPHA }, async (t) => {
+          await t.query(
+            `update ocs.subscription_changes set retainer_delta_cents = 0 where company_id = $1`,
+            [ALPHA],
+          );
+        }),
+      ).rejects.toThrow(/permission denied/i);
+    });
+
     it('keeps one contractor out of another contractor ledger', async () => {
       await ledger({ movement: 'collect', amount_cents: 250000, reason: 'activation' });
       const visible = await asTenant(appUrl!, { companyId: BETA }, async (c) => {

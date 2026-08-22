@@ -314,10 +314,18 @@ begin
 end
 $$;
 
--- Subscriptions are the only one of the three the application may amend: a
--- plan changes, a status moves to past_due. The two history tables are written
--- once and never revised.
+-- Subscriptions are amended in the ordinary course: a plan changes, a status
+-- moves to past_due.
 grant update on ocs.subscriptions to ocs_app, ocs_service;
+
+/*
+ * A change record is written once, with one exception: an approval is recorded
+ * against it afterwards, because that is precisely what "pending approval"
+ * means. A COLUMN-level grant says exactly that and nothing more -- the plan it
+ * moved between, the amounts, and who asked for it stay unrewritable, so an
+ * approval can never quietly become a different change.
+ */
+grant update (approved_by, approved_at) on ocs.subscription_changes to ocs_app, ocs_service;
 
 -- No DELETE on any of them. Financial history is not something the application
 -- should be able to remove, and the absence of the grant -- rather than a
