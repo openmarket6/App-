@@ -231,3 +231,46 @@ export async function sendInviteEmail(params: {
   }
   return result;
 }
+
+/**
+ * The password-reset email.
+ *
+ * Deliberately vaguer than the invitation: an invitation is addressed to
+ * somebody who is expecting it, a reset may be the first that a person hears
+ * that anyone asked. So it names no role, leaks nothing about the account, and
+ * says plainly that ignoring it is safe -- the wording has to work for the
+ * person who did request it and for the person who did not.
+ */
+export async function sendPasswordResetEmail(params: {
+  to: string;
+  name: string | null;
+  resetPath: string;
+}): Promise<EmailResult> {
+  if (!emailConfigured()) {
+    return { ok: false, error: 'No email provider configured (set RESEND_API_KEY and EMAIL_FROM)' };
+  }
+
+  const greeting = params.name?.trim() ? `${params.name.trim()},\n\n` : '';
+  const { html, text } = renderEmail({
+    title: 'Reset your password',
+    body:
+      `${greeting}Somebody asked to reset the password on your One Contractor Solutions ` +
+      'account. Choose a new one using the link below.\n\n' +
+      'This link can only be used once, and it expires in one hour. If you did not ask ' +
+      'for it, you can ignore this message — your password has not changed.',
+    linkPath: params.resetPath,
+    cta: 'Choose a new password',
+  });
+
+  const result = await sendEmail({
+    to: params.to,
+    subject: 'Reset your One Contractor Solutions password',
+    html,
+    text,
+  });
+
+  if (!result.ok) {
+    logger.warn({ to: params.to, error: result.error }, 'password reset email not delivered');
+  }
+  return result;
+}
