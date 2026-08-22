@@ -353,3 +353,81 @@ export interface PaymentMethodListResponse {
   customerId: string | null;
   paymentMethods: PaymentMethodRow[];
 }
+
+// --- GET /engineering/* ----------------------------------------------------
+
+/**
+ * An engineer of record. The licence fields are not decoration: an expired
+ * licence cannot seal, so `licenseExpired` decides whether this person can
+ * finish a job, not merely whether their details are tidy.
+ */
+export interface Engineer {
+  id: ID;
+  userId: ID | null;
+  displayName: string;
+  licenseType: string;
+  licenseNumber: string;
+  licenseState: string;
+  licenseExpiresOn: string | null;
+  licenseExpired: boolean;
+  disciplines: string[] | null;
+  maxActiveOrders: number | null;
+  isActive: boolean;
+  /** Open orders on this engineer's desk right now. */
+  activeOrders: number;
+}
+
+export interface EngineerListResponse {
+  engineers: Engineer[];
+  total: number;
+}
+
+/** A row of `GET /engineering/queue` — a drafting order seen from the desk. */
+export interface EngineeringOrder {
+  id: ID;
+  clientId: ID;
+  /** A sequence, not a label -- the column is an integer. */
+  orderNumber: number | null;
+  projectId: ID | null;
+  permitId: ID | null;
+  title: string;
+  description: string | null;
+  status: string;
+  priority: string;
+  engineerId: ID | null;
+  engineerName: string | null;
+  dueDate: string | null;
+  quoteStatus: string;
+  quotedCents: number | null;
+  currentRevision: number | null;
+  createdAt: string;
+  overdue: boolean;
+}
+
+export interface EngineeringQueueResponse {
+  orders: EngineeringOrder[];
+  total: number;
+  overdueCount: number;
+  /** Resolved server-side: the caller's own engineer row when none was asked for. */
+  engineerId: ID | null;
+}
+
+/** A seal is a professional act, so the record keeps the licence as it stood. */
+export interface DocumentSeal {
+  id: ID;
+  documentId: ID;
+  documentName: string | null;
+  documentVersionId: ID | null;
+  sealedByName: string;
+  licenseType: string;
+  licenseNumber: string;
+  licenseState: string;
+  sealedAt: string;
+  sealReference: string | null;
+  note: string | null;
+}
+
+export interface SealListResponse {
+  seals: DocumentSeal[];
+  total: number;
+}
