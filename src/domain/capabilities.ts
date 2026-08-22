@@ -20,6 +20,7 @@ export const ROLES = [
   'ADMIN',
   'PERMIT_TECH',
   'SITE_SUPERVISOR',
+  'ENGINEER',
   'VIEWER',
   'CLIENT',
   'PENDING',
@@ -28,12 +29,15 @@ export const ROLES = [
 export type Role = (typeof ROLES)[number];
 
 /** Roles that work across contractors, as opposed to inside one. */
-export const STAFF_ROLES: Role[] = ['ADMIN', 'PERMIT_TECH', 'SITE_SUPERVISOR', 'VIEWER'];
+export const STAFF_ROLES: Role[] = [
+  'ADMIN', 'PERMIT_TECH', 'SITE_SUPERVISOR', 'ENGINEER', 'VIEWER',
+];
 
 export const ROLE_LABELS: Record<Role, string> = {
   ADMIN: 'Administrator',
   PERMIT_TECH: 'Permit technician',
   SITE_SUPERVISOR: 'Site supervisor / project manager',
+  ENGINEER: 'Engineer / drafter',
   VIEWER: 'Viewer',
   CLIENT: 'Contractor (client portal)',
   PENDING: 'Awaiting authorization',
@@ -46,6 +50,9 @@ export const ROLE_DESCRIPTIONS: Record<Role, string> = {
     'Day-to-day permit work: file, chase, log corrections, schedule inspections, review compliance.',
   SITE_SUPERVISOR:
     'Field staff. Attends job sites under our licence, photographs the work, and signs off each required visit.',
+  ENGINEER:
+    'Produces plan sets, calculations and other deliverables, prices their own jobs, ' +
+    'and applies their professional seal. Works an assigned queue; does not assign work.',
   VIEWER: 'Read-only across the firm. Cannot file, edit or download credentials.',
   CLIENT: 'Sees only their own company: their permits, documents, invoices and job photos.',
   PENDING:
@@ -65,8 +72,14 @@ export const CAPABILITIES = [
   'inspection:read', 'inspection:schedule', 'inspection:record',
   // Supervision
   'supervision:read', 'supervision:log', 'supervision:amend',
-  // Drafting
+  // Drafting and engineering
   'drafting:read', 'drafting:request', 'drafting:quote', 'drafting:produce',
+  'drafting:assign',
+  // Sealing is its own capability, but the capability is only half the gate:
+  // the act also requires a licence on file against the person doing it. An
+  // administrator holds every capability and still cannot seal, because they
+  // have no licence to stake. See routes/compat/engineering.ts.
+  'engineering:seal', 'engineering:manage',
   // Billing
   'billing:read', 'billing:manage', 'billing:refund',
   // Jurisdictions and connectors
@@ -113,6 +126,28 @@ const SITE_SUPERVISOR_CAPS: Capability[] = [
   'jurisdiction:read',
 ];
 
+/**
+ * The staff engineer.
+ *
+ * Deliberately narrow. An engineer needs to see the permits and documents
+ * behind the work they are drawing, produce and seal deliverables, and price
+ * their own jobs -- and nothing else. They are not an administrator who happens
+ * to draw.
+ *
+ * Note what is absent: 'drafting:assign'. An engineer works their queue; who
+ * gets which job is an admin's decision, and letting engineers assign work to
+ * themselves would make workload invisible to the person managing it.
+ */
+const ENGINEER_CAPS: Capability[] = [
+  'permit:read',
+  'client:read',
+  'document:read', 'document:upload',
+  'jurisdiction:read',
+  'compliance:read',
+  'drafting:read', 'drafting:quote', 'drafting:produce',
+  'engineering:seal',
+];
+
 const PERMIT_TECH_CAPS: Capability[] = [
   ...VIEWER_CAPS,
   'permit:create', 'permit:edit', 'permit:submit',
@@ -121,7 +156,7 @@ const PERMIT_TECH_CAPS: Capability[] = [
   'document:upload',
   'inspection:schedule', 'inspection:record',
   'supervision:log',
-  'drafting:request', 'drafting:quote',
+  'drafting:request', 'drafting:quote', 'drafting:assign',
   'connector:run',
   'user:read',
 ];
@@ -140,6 +175,7 @@ export const ROLE_CAPABILITIES: Record<Role, readonly Capability[]> = {
   ADMIN: CAPABILITIES,
   PERMIT_TECH: PERMIT_TECH_CAPS,
   SITE_SUPERVISOR: SITE_SUPERVISOR_CAPS,
+  ENGINEER: ENGINEER_CAPS,
   VIEWER: VIEWER_CAPS,
   CLIENT: CLIENT_CAPS,
   // Deliberately empty. An unauthorized account can do nothing but wait.
