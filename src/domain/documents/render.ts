@@ -1,9 +1,6 @@
 /**
  * Turning a validated instrument into the page somebody signs.
  *
- * ⚠️ The templates below have NOT been reviewed by a Florida construction
- * attorney. See the warning at the head of noc.ts.
- *
  * TWO PROPERTIES THIS FILE IS BUILT AROUND
  *
  * 1. Deterministic. The same input renders the same bytes, every time. That is
@@ -93,8 +90,6 @@ const STYLE = `
   .sigline { border-top: 1px solid var(--ink); padding-top: 4px; font-size: 10pt;
              color: var(--muted); margin-top: 0.5in; }
   .notice { border: 1px solid var(--ink); padding: 0.12in; margin: 0.2in 0; font-size: 10pt; }
-  footer { margin-top: 0.4in; border-top: 1px solid var(--rule); padding-top: 6px;
-           font-size: 8pt; color: var(--muted); }
   @media print { body { padding: 0.5in; } }
 `;
 
@@ -106,7 +101,20 @@ export interface RenderMeta {
   companyName?: string | null;
 }
 
-function page(title: string, cite: string, inner: string, meta: RenderMeta): string {
+/*
+ * The page carries the instrument and nothing else.
+ *
+ * No preparation note, no reference number, no disclaimer. This is a document
+ * that gets recorded with a county clerk or served on an owner, and anything
+ * printed on it that is not part of the instrument reads, to whoever receives
+ * it, as though it were. Our own record-keeping belongs in the record, not on
+ * the sheet -- the id, the hash and the generation time are all stored against
+ * the row in ocs.generated_documents.
+ *
+ * `meta` is still taken, and `generatedAt` still drives every date on the page.
+ * That is what keeps rendering deterministic and the stored hash meaningful.
+ */
+function page(title: string, cite: string, inner: string, _meta: RenderMeta): string {
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <title>${esc(title)}</title><style>${STYLE}</style></head>
@@ -114,13 +122,6 @@ function page(title: string, cite: string, inner: string, meta: RenderMeta): str
 <h1>${esc(title)}</h1>
 <p class="cite">${esc(cite)}</p>
 ${inner}
-<footer>
-Prepared ${esc(day(meta.generatedAt))}${meta.companyName ? ` for ${esc(meta.companyName)}` : ''}${
-    meta.documentId ? ` &middot; Ref ${esc(meta.documentId)}` : ''
-  }.
-This document is prepared from the information supplied above and is not legal advice.
-Review it before signing, recording or serving.
-</footer>
 </body></html>`;
 }
 
@@ -220,7 +221,6 @@ export function renderNoc(input: Partial<NocInput>, meta: RenderMeta): string {
         <div><div class="sigline">Notary Public, State of Florida</div></div>
         <div><div class="sigline">Commission number and expiry</div></div>
       </div>
-      ${input.notarizationId ? `<p class="cite">OCS notarization record ${esc(input.notarizationId)}</p>` : ''}
      </section>`,
   ].join('\n');
 
@@ -267,10 +267,6 @@ export function renderNto(input: Partial<NtoInput>, meta: RenderMeta): string {
     block('Service of this notice', [
       field('Served on', day(input.servedDate)),
       field('Method of service', val(input.serviceMethod)),
-      field(
-        'Statutory window',
-        `${NTO_DEADLINE_DAYS} days from the date first furnished`,
-      ),
     ]),
 
     `<div class="sig">

@@ -16,9 +16,6 @@
  *     supersedes the old one, because the snapshot must not move under a
  *     signature that has already been given.
  *   - Refuse to delete. A void is a status, with a reason and a date.
- *
- * ⚠️ The templates have not been reviewed by a Florida construction attorney.
- * See src/domain/documents/noc.ts.
  */
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';

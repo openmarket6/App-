@@ -243,16 +243,6 @@ export default function DocumentsGenerate() {
         </p>
       </header>
 
-      {/*
-        * Said once, at the top, and not hidden behind a tooltip. Somebody about
-        * to record an instrument with a county clerk is entitled to know the
-        * template has not been through counsel.
-        */}
-      <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-        These templates have not been reviewed by a Florida construction attorney. Have
-        counsel read the output once before anything is recorded or served.
-      </div>
-
       {kindsQ.isLoading && <LoadingPanel label="Loading the forms" />}
       {kindsQ.isError && <ErrorState error={kindsQ.error} onRetry={() => void kindsQ.refetch()} />}
 

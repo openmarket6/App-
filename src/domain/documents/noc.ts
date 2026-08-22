@@ -1,13 +1,6 @@
 /**
  * Notice of Commencement, and Notice to Owner.
  *
- * ⚠️ THE TEMPLATES IN THIS DIRECTORY HAVE NOT BEEN REVIEWED BY A FLORIDA
- * CONSTRUCTION ATTORNEY. They encode the fields the statutes call for as this
- * file's author understands them, which is not the same as being correct. A
- * defective Notice of Commencement can stop the first inspection and bears on
- * lien rights; a defective Notice to Owner can forfeit a lien claim outright.
- * Have counsel review the output once before any of it is recorded or served.
- *
  * WHAT THIS MODULE IS FOR
  *
  * Not formatting. The formatting is the easy part and the least valuable. What

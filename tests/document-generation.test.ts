@@ -525,6 +525,11 @@ describe('the form and the validator', () => {
       if (!r.ok) continue;
       for (const f of DOCUMENT_FIELDS[kind]) {
         if (f.type !== 'text' && f.type !== 'textarea') continue;
+        // Deliberately not printed: it is our internal notarization reference,
+        // and an instrument that goes to a county clerk carries the instrument,
+        // not our record-keeping. Required, because the notice must be sworn;
+        // stored, in the input snapshot; off the sheet.
+        if (f.name === 'notarizationId') continue;
         expect(r.html, `${kind}.${f.name} never reaches the page`)
           .toContain(`ZZ-${f.name}-ZZ`);
       }

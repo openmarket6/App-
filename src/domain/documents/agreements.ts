@@ -1,11 +1,6 @@
 /**
  * Hold harmless, and the contractor services agreement.
  *
- * ⚠️ NOT REVIEWED BY A FLORIDA CONSTRUCTION ATTORNEY. See the warning at the
- * head of noc.ts, which applies here with more force: an indemnity clause that
- * reaches too far is void under Fla. Stat. 725.06, and a void indemnity is
- * worse than none — the party relying on it finds out only when they need it.
- *
  * WHAT THIS MODULE REFUSES TO DO
  *
  * It will not produce an agreement whose money is guessed. The contractor
