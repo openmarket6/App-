@@ -36,7 +36,6 @@ import Support from './pages/Support.tsx';
 import Notary from './pages/Notary.tsx';
 import Users from './pages/Users.tsx';
 import Settings from './pages/Settings.tsx';
-import GoogleSettings from './pages/GoogleSettings.tsx';
 import Placeholder from './pages/Placeholder.tsx';
 
 export default function App() {
@@ -117,7 +116,6 @@ export default function App() {
         <Route path="/reports" element={staffOnly(<Reports />)} />
         <Route path="/connectors" element={staffOnly(<Connectors />)} />
         <Route path="/settings" element={staffOnly(<Settings />)} />
-        <Route path="/settings/google" element={staffOnly(<GoogleSettings />)} />
         <Route path="/settings/users" element={user.role === 'ADMIN' ? <Users /> : <Navigate to="/dashboard" replace />} />
 
         <Route path="*" element={<Navigate to={home} replace />} />

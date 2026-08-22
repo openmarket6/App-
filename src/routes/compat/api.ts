@@ -90,7 +90,16 @@ const clientFilter = (companyId: string | null) => (companyId ? ` and company_id
  */
 export const NOT_MIGRATED_AREAS = [
   'signing',
-  'connectors', 'integrations', 'google',
+  'connectors', 'integrations',
+  /*
+   * Google Drive is not "not yet" — it is not happening.
+   *
+   * The connector was dropped from the product, and its screen and route are
+   * gone with it. The 501 stays so anything still pointing here gets a clear
+   * answer rather than a 404, but nobody should port this expecting it is
+   * wanted: it is a decision, not a backlog item.
+   */
+  'google',
 ];
 
 export async function compatApiRoutes(app: FastifyInstance): Promise<void> {

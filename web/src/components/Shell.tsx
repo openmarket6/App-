@@ -53,7 +53,6 @@ const SECTIONS: NavSection[] = [
     items: [
       { to: '/reports', label: 'Reports', staffOnly: true },
       { to: '/settings/users', label: 'Users & access', staffOnly: true },
-      { to: '/settings/google', label: 'Google Drive', staffOnly: true },
       { to: '/connectors', label: 'Portal Connectors', staffOnly: true },
       { to: '/settings', label: 'Settings', staffOnly: true },
     ],
