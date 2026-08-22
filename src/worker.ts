@@ -16,6 +16,17 @@ import { startWorker, stopWorker } from './jobs/runner.js';
 import { env } from './config/env.js';
 
 async function main(): Promise<void> {
+  // The worker has no HTTP surface, so it cannot answer /version the way the
+  // API does. One line at startup is the equivalent: it puts the commit in the
+  // log stream, which is the only place anyone can look.
+  logger.info(
+    {
+      commit: process.env['RENDER_GIT_COMMIT'] ?? null,
+      branch: process.env['RENDER_GIT_BRANCH'] ?? null,
+    },
+    'worker starting',
+  );
+
   if (!env.WORKER_ENABLED) {
     logger.warn('WORKER_ENABLED is false; exiting without processing jobs');
     return;

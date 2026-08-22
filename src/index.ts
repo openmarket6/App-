@@ -158,7 +158,8 @@ export async function buildServer() {
     keyGenerator: (req) => req.principal?.userId ?? req.ip,
     // Health checks must never be throttled: throttling them makes the platform
     // think a busy instance is a dead one.
-    allowList: (req) => req.url === '/healthz' || req.url === '/readyz',
+    allowList: (req) =>
+      req.url === '/healthz' || req.url === '/readyz' || req.url === '/version',
     addHeaders: {
       'x-ratelimit-limit': true,
       'x-ratelimit-remaining': true,
