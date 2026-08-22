@@ -23,7 +23,9 @@ import { withTenant, withServiceContext, type Tx } from '../../db/tenant.js';
 import { requireApiAuth, requireCapability } from './auth.js';
 import { parse, clientIp, userAgent } from '../../lib/http-helpers.js';
 import { writeAudit } from '../../lib/audit.js';
-import { notFound, badRequest, forbidden, conflict } from '../../lib/errors.js';
+import {
+  notFound, badRequest, forbidden, conflict, unprocessable,
+} from '../../lib/errors.js';
 import { createHash } from 'node:crypto';
 import {
   buildStorageKey, uploadObject, assertAllowedContentType,
@@ -169,6 +171,16 @@ async function supervisorIdFor(tx: Tx, userId: string): Promise<string | null> {
   );
   return row?.id ?? null;
 }
+
+/**
+ * The sentence a contractor accepts, verbatim.
+ *
+ * Exported so the screen can render exactly what the endpoint will match. Two
+ * copies of a legal acknowledgement drift, and the one that matters is whichever
+ * the server compared against.
+ */
+export const SUPERVISION_ACKNOWLEDGEMENT =
+  'I understand that One Contractor Solutions qualifies and supervises this permitted work.';
 
 /** This is the firm's own licence going on somebody else's permit. */
 async function requireAdminRole(req: Parameters<typeof requireApiAuth>[0]): Promise<void> {
@@ -615,7 +627,15 @@ export async function compatSupervisionRoutes(app: FastifyInstance): Promise<voi
                left join ocs.projects pr on pr.id = p.project_id
                left join ocs.companies co on co.id = v.company_id
               where v.supervisor_id = $1
-                and v.status in ('scheduled', 'in_progress')
+                -- 'required' belongs in the queue too. Activation writes the
+                -- whole visit plan as required: the milestone must happen, no
+                -- date chosen yet. Showing only scheduled meant a supervisor
+                -- saw an empty screen until a coordinator had picked a date for
+                -- every milestone, which is backwards -- the person who knows
+                -- when they can get to a roof is the one holding the phone. A
+                -- visit with no date is work to be done, and hiding it does not
+                -- make it less due.
+                and v.status in ('required', 'scheduled', 'in_progress')
               order by
                 (v.scheduled_for is not null and v.scheduled_for < now()) desc,
                 v.scheduled_for asc nulls last
@@ -1431,6 +1451,265 @@ export async function compatSupervisionRoutes(app: FastifyInstance): Promise<voi
 
       reply.code(201);
       return result;
+    },
+  );
+
+  /**
+   * Activate an engagement: name the supervisor, and lay out the visit plan.
+   *
+   * This is the step that turns an accepted engagement into work somebody can
+   * actually do, and it existed only under /v1 on Supabase auth. Two things
+   * followed from that, both of which looked like something else:
+   *
+   *   - No engagement ever had a supervisor, so the verdict said "No supervisor
+   *     assigned. Somebody has to be walking the job."
+   *   - No visit was ever created, so the PM Portal queue was empty for every
+   *     supervisor, forever, and looked like a quiet week rather than a
+   *     product that could not populate itself.
+   *
+   * The visit plan is COPIED from the milestone templates rather than
+   * referenced. Editing a template later must never change what an in-flight
+   * job was required to produce — including its photograph minimums, which are
+   * copied for the same reason.
+   */
+  app.post(
+    '/api/supervision/engagements/:id/activate',
+    { preHandler: [requireApiAuth, requireCapability('supervision:log')] },
+    async (req) => {
+      const auth = req.apiAuth!;
+      const { id } = parse(z.object({ id: z.string().uuid() }), req.params, 'parameters');
+      const body = parse(
+        z.object({
+          supervisorId: z.string().uuid(),
+          serviceLicenseId: z.string().uuid().optional(),
+          setupFeeCents: z.number().int().min(0).nullable().optional(),
+          perVisitFeeCents: z.number().int().min(0).nullable().optional(),
+          monthlyFeeCents: z.number().int().min(0).nullable().optional(),
+        }),
+        req.body,
+        'activation',
+      );
+
+      return withServiceContext(
+        async (tx) => {
+          const engagement = await tx.one<{
+            id: string; company_id: string; trade_id: string;
+            service_license_id: string | null; status: string;
+          }>(
+            `select id, company_id, trade_id, service_license_id, status::text as status
+               from ocs.supervision_engagements
+              where id = $1 and deleted_at is null
+              for update`,
+            [id],
+          );
+          if (!engagement) throw notFound('Engagement');
+          if (engagement.status === 'completed' || engagement.status === 'terminated') {
+            throw conflict('That engagement is finished and cannot be activated.');
+          }
+
+          const supervisor = await tx.one<{ id: string; is_active: boolean }>(
+            'select id, is_active from ocs.supervisors where id = $1',
+            [body.supervisorId],
+          );
+          if (!supervisor) {
+            throw badRequest(
+              'No supervisor record with that id. Record the supervisor first — a ' +
+                'login alone is not one.',
+            );
+          }
+          if (!supervisor.is_active) {
+            throw badRequest('That supervisor is not active.');
+          }
+
+          const licenceId = body.serviceLicenseId ?? engagement.service_license_id;
+          if (!licenceId) {
+            throw badRequest(
+              'This engagement has no qualifying licence on it, so there is nothing ' +
+                'to activate it under.',
+            );
+          }
+
+          /*
+           * A database trigger re-checks all of this on the way in: that the
+           * licence covers the trade, has not lapsed, and is not already at its
+           * engagement limit, and that the supervisor is active and competent
+           * in the trade. It raises a plain exception, which without this
+           * becomes "An unexpected error occurred" — and every one of those
+           * messages is something the person activating can act on. Surfaced as
+           * a 422 with the reason intact.
+           */
+          try {
+            await tx.query(
+              `update ocs.supervision_engagements
+                  set service_license_id = $2,
+                      supervisor_id = $3,
+                      setup_fee_cents = coalesce($4, setup_fee_cents),
+                      per_visit_fee_cents = coalesce($5, per_visit_fee_cents),
+                      monthly_fee_cents = coalesce($6, monthly_fee_cents),
+                      status = 'active',
+                      activated_at = coalesce(activated_at, now())
+                where id = $1`,
+              [
+                id, licenceId, body.supervisorId,
+                body.setupFeeCents ?? null, body.perVisitFeeCents ?? null,
+                body.monthlyFeeCents ?? null,
+              ],
+            );
+          } catch (err) {
+            throw unprocessable((err as Error).message.replace(/^error:\s*/i, ''));
+          }
+
+          /*
+           * `on conflict do nothing` so re-activating — reassigning a
+           * supervisor, say — does not duplicate the plan or reset milestones
+           * a supervisor has already worked.
+           */
+          const plan = await tx.query(
+            `insert into ocs.supervision_visits
+               (company_id, engagement_id, milestone_code, milestone_name, sequence,
+                is_mandatory, supervisor_id, status, required_photo_count,
+                required_photo_types)
+             select $2, $1, t.code, t.name, t.sequence, t.is_mandatory, $3,
+                    'required', t.min_photos, t.required_photo_types
+               from ocs.visit_milestone_templates t
+              where t.trade_id = $4
+             on conflict (engagement_id, milestone_code) do nothing`,
+            [id, engagement.company_id, body.supervisorId, engagement.trade_id],
+          );
+
+          // Visits already on the plan get the new supervisor too, or a
+          // reassignment would leave the old one holding the queue.
+          await tx.query(
+            `update ocs.supervision_visits
+                set supervisor_id = $2
+              where engagement_id = $1 and status in ('required','scheduled')`,
+            [id, body.supervisorId],
+          );
+
+          const total = await tx.one<{ n: string }>(
+            `select count(*)::text as n from ocs.supervision_visits where engagement_id = $1`,
+            [id],
+          );
+
+          await writeAudit(tx, {
+            companyId: engagement.company_id,
+            actorUserId: auth.userId,
+            actorEmail: auth.email,
+            action: 'supervision.engagement_activated',
+            entityType: 'supervision_engagement',
+            entityId: id,
+            summary: `Engagement activated with ${total?.n ?? '0'} planned visits`,
+            after: { supervisorId: body.supervisorId, serviceLicenseId: licenceId },
+            requestId: req.id,
+            ipAddress: clientIp(req),
+            userAgent: userAgent(req),
+          });
+
+          return {
+            id,
+            status: 'active',
+            supervisorId: body.supervisorId,
+            serviceLicenseId: licenceId,
+            plannedVisits: Number(total?.n ?? 0),
+            visitsAdded: plan.rowCount ?? 0,
+            /*
+             * Said plainly. A trade with no milestone templates activates
+             * cleanly and produces an empty plan, which looks identical to a
+             * working engagement until somebody wonders why nobody has visited.
+             */
+            note: Number(total?.n ?? 0) === 0
+              ? 'No visit milestones are configured for this trade, so the plan is ' +
+                'empty and nothing will appear in the supervisor’s queue.'
+              : null,
+          };
+        },
+        { reason: 'supervision_activate' },
+      );
+    },
+  );
+
+  /**
+   * The contractor accepts the terms.
+   *
+   * The step between "requested" and anything happening. A database constraint
+   * refuses to activate an engagement whose terms were never accepted, which is
+   * correct and was also unreachable: this endpoint existed only under /v1 on
+   * Supabase auth, so every activation failed on a constraint whose remedy had
+   * no door.
+   *
+   * The acknowledgement is a literal, matched exactly. This is the contractor
+   * agreeing that OCS's qualifier directs their permitted work — which carries
+   * real weight for both parties — and a boolean flag would not evidence that
+   * anybody read it. Typing the sentence is the point.
+   */
+  app.post(
+    '/api/supervision/engagements/:id/accept-terms',
+    { preHandler: [requireApiAuth, requireCapability('supervision:read')] },
+    async (req) => {
+      const auth = req.apiAuth!;
+      const { id } = parse(z.object({ id: z.string().uuid() }), req.params, 'parameters');
+      const body = parse(
+        z.object({
+          acknowledgement: z.literal(SUPERVISION_ACKNOWLEDGEMENT),
+        }),
+        req.body,
+        'terms acceptance',
+      );
+      void body;
+
+      return withServiceContext(
+        async (tx) => {
+          const existing = await tx.one<{
+            id: string; company_id: string; terms_accepted_at: string | null;
+          }>(
+            `select id, company_id, terms_accepted_at from ocs.supervision_engagements
+              where id = $1 and deleted_at is null`,
+            [id],
+          );
+          if (!existing) throw notFound('Engagement');
+
+          /*
+           * A CLIENT may only accept for their own company. Staff may record it
+           * on their behalf -- contractors sign on paper and by phone -- and the
+           * audit entry names who actually did it either way.
+           */
+          if (auth.role === 'CLIENT' && auth.clientId !== existing.company_id) {
+            throw forbidden('That engagement belongs to a different contractor');
+          }
+          if (existing.terms_accepted_at) {
+            throw conflict('Those terms were already accepted.');
+          }
+
+          const row = await tx.one<{ id: string; engagement_number: number }>(
+            `update ocs.supervision_engagements
+                set terms_accepted_at = now(),
+                    terms_accepted_by = $2,
+                    status = case when status in ('requested','quoted')
+                                  then 'accepted'::ocs.engagement_status else status end
+              where id = $1 and terms_accepted_at is null
+              returning id, engagement_number`,
+            [id, auth.userId],
+          );
+          if (!row) throw conflict('Those terms were already accepted.');
+
+          await writeAudit(tx, {
+            companyId: existing.company_id,
+            actorUserId: auth.userId,
+            actorEmail: auth.email,
+            action: 'supervision.terms_accepted',
+            entityType: 'supervision_engagement',
+            entityId: id,
+            summary: `Supervision terms accepted for engagement #${row.engagement_number}`,
+            after: { acknowledgement: SUPERVISION_ACKNOWLEDGEMENT, acceptedByRole: auth.role },
+            requestId: req.id,
+            ipAddress: clientIp(req),
+            userAgent: userAgent(req),
+          });
+
+          return { id, status: 'accepted', termsAccepted: true };
+        },
+        { reason: 'supervision_accept_terms' },
+      );
     },
   );
 }

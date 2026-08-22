@@ -526,3 +526,284 @@ describeIfDb('the supervision verdict', () => {
     }
   });
 });
+
+/**
+ * Activation: naming the supervisor and laying out the visit plan.
+ *
+ * This step existed only under /v1 on Supabase auth, and two things followed
+ * from that, each of which looked like something else entirely:
+ *
+ *   - no engagement ever had a supervisor, so the verdict reported "No
+ *     supervisor assigned. Somebody has to be walking the job."
+ *   - no visit was ever created, so every supervisor's queue in the PM Portal
+ *     was empty forever — which reads as a quiet week, not as a product that
+ *     cannot populate itself.
+ */
+describeIfDb('activating an engagement', () => {
+  const ADMIN = { email: 'act-admin@test.invalid', password: 'ActivateAdmin2026!' };
+  const FIELD = 'act-field@test.invalid';
+  let tradeId = '';
+  let permitId = '';
+  let supervisorId = '';
+
+  beforeAll(async () => {
+    await applyMigrations();
+    const c = client(ownerUrl!);
+    await c.connect();
+    try {
+      await c.query('create extension if not exists pgcrypto');
+      await c.query('delete from ocs.companies where id = $1', [ALPHA]);
+      await c.query(`insert into ocs.companies (id, name) values ($1,'Alpha Roofing LLC')`, [ALPHA]);
+      await c.query('delete from ocs.app_users where email in ($1,$2)', [ADMIN.email, FIELD]);
+      await c.query(
+        `insert into ocs.app_users (email, name, app_role, is_active, password_hash)
+         values ($1,'Admin','ADMIN',true, crypt($2, gen_salt('bf',10)))`,
+        [ADMIN.email, ADMIN.password],
+      );
+      const fieldUser = (await c.query(
+        `insert into ocs.app_users (email, name, app_role, is_active)
+         values ($1,'Field Sam','SITE_SUPERVISOR',true) returning id`,
+        [FIELD],
+      )).rows[0].id;
+      supervisorId = (await c.query(
+        `insert into ocs.supervisors (user_id, display_name, is_active)
+         values ($1,'Field Sam',true)
+         on conflict (user_id) do update set is_active = true
+         returning id`,
+        [fieldUser],
+      )).rows[0].id;
+      // A trade that actually has milestone templates, or the plan is empty
+      // for a reason unrelated to what is being tested.
+      tradeId = (await c.query(
+        `select trade_id from ocs.visit_milestone_templates group by trade_id limit 1`,
+      )).rows[0].trade_id;
+      const proj = (await c.query(
+        `insert into ocs.projects (company_id, name) values ($1,'Activate Site') returning id`,
+        [ALPHA],
+      )).rows[0].id;
+      permitId = (await c.query(
+        `insert into ocs.permits (company_id, project_id, permit_type, status)
+         values ($1,$2,'ROOFING','draft') returning id`,
+        [ALPHA, proj],
+      )).rows[0].id;
+    } finally {
+      await c.end();
+    }
+  });
+
+  beforeEach(async () => {
+    const c = client(ownerUrl!);
+    await c.connect();
+    try {
+      await c.query('delete from ocs.supervision_visits');
+      await c.query('delete from ocs.supervision_engagements where company_id = $1', [ALPHA]);
+      await c.query('delete from ocs.service_licenses');
+    } finally {
+      await c.end();
+    }
+  });
+
+  const tok = async (app: Awaited<ReturnType<typeof server>>) => {
+    const res = await app.inject({ method: 'POST', url: '/api/auth/login', payload: ADMIN });
+    expect(res.statusCode).toBe(200);
+    return JSON.parse(res.body).accessToken as string;
+  };
+
+  const ACK =
+    'I understand that One Contractor Solutions qualifies and supervises this permitted work.';
+
+  const openEngagement = async (app: Awaited<ReturnType<typeof server>>, t: string) => {
+    await app.inject({
+      method: 'POST', url: '/api/supervision/licenses',
+      headers: { authorization: `Bearer ${t}` },
+      payload: {
+        tradeId, licenseNumber: 'CGC-ACT', qualifierName: 'Ryan Q', expiresOn: '2030-01-01',
+      },
+    });
+    const res = await app.inject({
+      method: 'POST', url: '/api/supervision/engagements',
+      headers: { authorization: `Bearer ${t}` },
+      payload: { permitId, tradeId },
+    });
+    expect(res.statusCode, res.body).toBe(201);
+    const id = JSON.parse(res.body).id as string;
+    // A database constraint refuses to activate an engagement whose terms were
+    // never accepted. Correct, and it needs a door.
+    const terms = await app.inject({
+      method: 'POST', url: `/api/supervision/engagements/${id}/accept-terms`,
+      headers: { authorization: `Bearer ${t}` },
+      payload: { acknowledgement: ACK },
+    });
+    expect(terms.statusCode, terms.body).toBe(200);
+    return id;
+  };
+
+  it('lays out the visit plan from the trade templates', async () => {
+    // The whole point. Nothing else in the system creates a visit.
+    const app = await server();
+    try {
+      const t = await tok(app);
+      const id = await openEngagement(app, t);
+      const res = await app.inject({
+        method: 'POST', url: `/api/supervision/engagements/${id}/activate`,
+        headers: { authorization: `Bearer ${t}` },
+        payload: { supervisorId },
+      });
+      expect(res.statusCode, res.body).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.status).toBe('active');
+      expect(body.plannedVisits).toBeGreaterThan(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('puts those visits in the supervisor’s queue', async () => {
+    /*
+     * The second half of the bug, and it would have survived the first fix.
+     * Activation writes visits as `required`; my-visits filtered on
+     * `scheduled` and `in_progress` only, so the queue stayed empty even after
+     * a plan existed.
+     */
+    const app = await server();
+    try {
+      const t = await tok(app);
+      const id = await openEngagement(app, t);
+      await app.inject({
+        method: 'POST', url: `/api/supervision/engagements/${id}/activate`,
+        headers: { authorization: `Bearer ${t}` },
+        payload: { supervisorId },
+      });
+
+      const c = client(ownerUrl!);
+      await c.connect();
+      let n = 0;
+      try {
+        n = Number((await c.query(
+          `select count(*)::int as n from ocs.supervision_visits
+            where supervisor_id = $1 and status = 'required'`,
+          [supervisorId],
+        )).rows[0].n);
+      } finally {
+        await c.end();
+      }
+      expect(n).toBeGreaterThan(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('does not duplicate the plan when activated twice', async () => {
+    // Reassigning a supervisor must not reset milestones already worked.
+    const app = await server();
+    try {
+      const t = await tok(app);
+      const id = await openEngagement(app, t);
+      const first = await app.inject({
+        method: 'POST', url: `/api/supervision/engagements/${id}/activate`,
+        headers: { authorization: `Bearer ${t}` }, payload: { supervisorId },
+      });
+      const second = await app.inject({
+        method: 'POST', url: `/api/supervision/engagements/${id}/activate`,
+        headers: { authorization: `Bearer ${t}` }, payload: { supervisorId },
+      });
+      expect(JSON.parse(second.body).plannedVisits)
+        .toBe(JSON.parse(first.body).plannedVisits);
+      expect(JSON.parse(second.body).visitsAdded).toBe(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('refuses a supervisor id that is only a login', async () => {
+    /*
+     * A login and a supervisor are different rows. Accepting one where the
+     * other belongs is how the field screen ends up saying "not linked to a
+     * supervisor record" about an account somebody just set up.
+     */
+    const app = await server();
+    try {
+      const t = await tok(app);
+      const id = await openEngagement(app, t);
+      const c = client(ownerUrl!);
+      await c.connect();
+      let userId = '';
+      try {
+        userId = (await c.query('select id from ocs.app_users where email = $1', [FIELD])).rows[0].id;
+      } finally {
+        await c.end();
+      }
+      const res = await app.inject({
+        method: 'POST', url: `/api/supervision/engagements/${id}/activate`,
+        headers: { authorization: `Bearer ${t}` },
+        payload: { supervisorId: userId },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).message).toMatch(/a login alone is not one/i);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('will not activate before the terms are accepted', async () => {
+    /*
+     * The constraint that made every activation a 500 until accept-terms had a
+     * reachable endpoint. Now it is a 422 that says what is wrong.
+     */
+    const app = await server();
+    try {
+      const t = await tok(app);
+      await app.inject({
+        method: 'POST', url: '/api/supervision/licenses',
+        headers: { authorization: `Bearer ${t}` },
+        payload: {
+          tradeId, licenseNumber: 'CGC-NOTERMS', qualifierName: 'Ryan Q',
+          expiresOn: '2030-01-01',
+        },
+      });
+      const opened = await app.inject({
+        method: 'POST', url: '/api/supervision/engagements',
+        headers: { authorization: `Bearer ${t}` },
+        payload: { permitId, tradeId },
+      });
+      const id = JSON.parse(opened.body).id;
+
+      const res = await app.inject({
+        method: 'POST', url: `/api/supervision/engagements/${id}/activate`,
+        headers: { authorization: `Bearer ${t}` }, payload: { supervisorId },
+      });
+      expect(res.statusCode).toBe(422);
+      expect(JSON.parse(res.body).message).toMatch(/terms/i);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('insists on the acknowledgement being typed exactly', async () => {
+    // A boolean would not evidence that anybody read it. The contractor is
+    // agreeing that OCS's qualifier directs their permitted work.
+    const app = await server();
+    try {
+      const t = await tok(app);
+      await app.inject({
+        method: 'POST', url: '/api/supervision/licenses',
+        headers: { authorization: `Bearer ${t}` },
+        payload: { tradeId, licenseNumber: 'CGC-ACK', qualifierName: 'Ryan Q', expiresOn: '2030-01-01' },
+      });
+      const opened = await app.inject({
+        method: 'POST', url: '/api/supervision/engagements',
+        headers: { authorization: `Bearer ${t}` },
+        payload: { permitId, tradeId },
+      });
+      const id = JSON.parse(opened.body).id;
+      const res = await app.inject({
+        method: 'POST', url: `/api/supervision/engagements/${id}/accept-terms`,
+        headers: { authorization: `Bearer ${t}` },
+        payload: { acknowledgement: 'yes' },
+      });
+      expect(res.statusCode).toBe(400);
+    } finally {
+      await app.close();
+    }
+  });
+});
