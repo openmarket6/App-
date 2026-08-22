@@ -80,11 +80,17 @@ export interface UserRow {
   client_id: string | null;
   is_active: boolean;
   password_hash: string | null;
+  /*
+   * Selected so the login handler can tell "wrong password" apart from "this
+   * account was invited and has never been set up". Those are different facts
+   * and, told apart, the second one is self-service.
+   */
+  invite_token?: string | null;
+  invite_expires_at?: string | null;
   token_version: number;
   created_at: string | Date;
   last_login_at: string | Date | null;
   mfa_enabled?: boolean;
-  invite_token?: string | null;
 }
 
 const iso = (v: string | Date | null): string | null =>
@@ -356,7 +362,8 @@ export async function findUserByEmail(email: string): Promise<UserRow | null> {
         // on it, and omitting it made that branch silently unreachable -- a
         // second factor that was enrolled, stored and never asked for.
         `select id, email, name, app_role, client_id, is_active, password_hash,
-                token_version, created_at, last_login_at, mfa_enabled
+                token_version, created_at, last_login_at, mfa_enabled,
+                invite_token, invite_expires_at
            from ocs.app_users
           where lower(email) = lower($1) and deleted_at is null`,
         [email],

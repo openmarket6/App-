@@ -196,6 +196,47 @@ export async function compatAuthRoutes(app: FastifyInstance): Promise<void> {
       await verifyPassword('$2a$10$invalidinvalidinvalidinvalidinvalidinvalidinvalidinvalidinv', body.password);
       throw generic();
     }
+
+    /*
+     * The one failure worth naming.
+     *
+     * An invited account that has never set a password cannot log in with ANY
+     * password, and "Email or password is incorrect" sends that person to try
+     * harder at something that can never work. It cost this team three separate
+     * incidents and half an hour of someone's morning before anyone thought to
+     * look in the database.
+     *
+     * Yes, this confirms the address was invited. That is a real disclosure and
+     * it is a deliberate trade: it only fires for an account somebody
+     * deliberately invited and which has not been claimed, it reveals nothing
+     * about any password, and the alternative is a support call every time.
+     * The token is NOT included -- anyone who knew an email address could
+     * otherwise claim the account.
+     */
+    const inviteOutstanding =
+      !user.password_hash &&
+      Boolean(user.invite_token) &&
+      (!user.invite_expires_at || new Date(user.invite_expires_at) > new Date());
+
+    if (inviteOutstanding) {
+      logger.info({ email: body.email }, 'sign-in attempted on an unclaimed invitation');
+      throw badRequest(
+        'This account has not been set up yet. Open the invitation link that was ' +
+          'created for you to choose a password. If you do not have it, ask an ' +
+          'administrator to send it again from Users & access.',
+      );
+    }
+
+    if (!user.password_hash) {
+      // Active, no password, no usable invite. Nothing this person can do
+      // alone, so say that rather than letting them keep guessing.
+      logger.warn({ email: body.email }, 'sign-in attempted on an account with no password');
+      throw badRequest(
+        'This account has no password set and its invitation has expired or was ' +
+          'never issued. An administrator needs to re-invite it.',
+      );
+    }
+
     if (!(await verifyPassword(user.password_hash, body.password))) {
       logger.info({ email: body.email, ip: clientIp(req) }, 'failed sign-in attempt');
       throw generic();
