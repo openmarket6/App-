@@ -39,6 +39,9 @@ import {
   type PermitStage,
 } from './mapping.js';
 import { logger } from '../../lib/logger.js';
+import { NOT_MIGRATED_AREAS } from './not-migrated.js';
+export { NOT_MIGRATED_AREAS };
+
 import {
   buildRoadmap, pathwayForTier, matchJurisdiction, UNKNOWN_GATE,
   type Jurisdiction,
@@ -93,18 +96,6 @@ const clientFilter = (companyId: string | null) => (companyId ? ` and company_id
  * drift the moment one of these is migrated, and then the test would be
  * reporting yesterday's architecture.
  */
-export const NOT_MIGRATED_AREAS = [
-  'connectors',
-  /*
-   * Google Drive is not "not yet" — it is not happening.
-   *
-   * The connector was dropped from the product, and its screen and route are
-   * gone with it. The 501 stays so anything still pointing here gets a clear
-   * answer rather than a 404, but nobody should port this expecting it is
-   * wanted: it is a decision, not a backlog item.
-   */
-  'google',
-];
 
 export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
   const auth = { preHandler: requireApiAuth };
