@@ -170,6 +170,13 @@ async function supervisorIdFor(tx: Tx, userId: string): Promise<string | null> {
   return row?.id ?? null;
 }
 
+/** This is the firm's own licence going on somebody else's permit. */
+async function requireAdminRole(req: Parameters<typeof requireApiAuth>[0]): Promise<void> {
+  if (req.apiAuth?.role !== 'ADMIN') {
+    throw forbidden('Only an administrator can record the firm\'s licences and supervisors');
+  }
+}
+
 export async function compatSupervisionRoutes(app: FastifyInstance): Promise<void> {
   /** Overview: what is scheduled, what is overdue, what has no photographs. */
   app.get(
@@ -1168,6 +1175,222 @@ export async function compatSupervisionRoutes(app: FastifyInstance): Promise<voi
           };
         },
         { reason: 'supervision_open_engagement' },
+      );
+
+      reply.code(201);
+      return result;
+    },
+  );
+
+  /**
+   * OCS's own qualifying licences, and the supervisors who walk the jobs.
+   *
+   * Both existed only under /v1, on Supabase auth, so neither could be reached
+   * from the application. The consequence was not subtle: ocs.service_licenses
+   * and ocs.supervisors are both EMPTY in production, every managed-licence
+   * engagement is refused for want of a licence, and a SITE_SUPERVISOR login
+   * opens the field screen to "This account is not linked to a supervisor
+   * record yet". The whole managed-licence line was unreachable from its own
+   * first step.
+   *
+   * Administrator-only, deliberately: this is the firm's own licence going on
+   * somebody else's permit, which is the most consequential row in the system.
+   */
+  app.get(
+    '/api/supervision/licenses',
+    { preHandler: [requireApiAuth, requireCapability('settings:read')] },
+    async () =>
+      withServiceContext(
+        async (tx) => {
+          const rows = await tx.many(
+            `select l.id, l.trade_id as "tradeId", t.name as trade,
+                    l.license_number as "licenseNumber",
+                    l.license_type::text as "licenseType",
+                    l.qualifier_name as "qualifierName",
+                    l.qualifier_user_id as "qualifierUserId",
+                    l.issued_on as "issuedOn", l.expires_on as "expiresOn",
+                    l.status::text as status,
+                    l.max_active_engagements as "maxActiveEngagements",
+                    l.service_counties as "serviceCounties",
+                    (l.expires_on is not null and l.expires_on < current_date) as expired,
+                    (select count(*) from ocs.supervision_engagements e
+                      where e.trade_id = l.trade_id
+                        and e.status in ('accepted','active')) as "activeEngagements"
+               from ocs.service_licenses l
+               left join ocs.trades t on t.id = l.trade_id
+              where l.deleted_at is null
+              order by t.name nulls last, l.license_number`,
+          );
+          return { licenses: rows, total: rows.length };
+        },
+        { reason: 'list_service_licenses' },
+      ),
+  );
+
+  app.post(
+    '/api/supervision/licenses',
+    { preHandler: [requireApiAuth, requireAdminRole] },
+    async (req, reply) => {
+      const auth = req.apiAuth!;
+      const body = parse(
+        z.object({
+          tradeId: z.string().uuid().optional(),
+          trade: z.string().trim().max(60).optional(),
+          licenseNumber: z.string().trim().min(1).max(80),
+          licenseType: z.enum([
+            'state_certified', 'state_registered', 'county_local',
+            'municipal', 'specialty', 'business_tax_receipt',
+          ]).default('state_certified'),
+          qualifierName: z.string().trim().min(1).max(200),
+          qualifierUserId: z.string().uuid().nullable().optional(),
+          issuedOn: z.string().date().nullable().optional(),
+          expiresOn: z.string().date().nullable().optional(),
+          maxActiveEngagements: z.number().int().min(1).max(500).default(25),
+          serviceCounties: z.array(z.string().max(60)).max(67).default([]),
+        }),
+        req.body,
+        'service licence',
+      );
+
+      const result = await withServiceContext(
+        async (tx) => {
+          let tradeId = body.tradeId ?? null;
+          if (!tradeId && body.trade) {
+            const t = await tx.one<{ id: string }>(
+              `select id from ocs.trades
+                where upper(code) = upper($1) or upper(name) = upper($1) limit 1`,
+              [body.trade],
+            );
+            tradeId = t?.id ?? null;
+          }
+          if (!tradeId) throw badRequest('Say which trade this licence qualifies.');
+
+          /*
+           * license_type is written explicitly even though the column has a
+           * default. The /v1 original omitted it and relied on the default,
+           * which works only for as long as the default is the right answer --
+           * and a county licence recorded as state-certified is the kind of
+           * wrong that is discovered by a regulator rather than by us.
+           */
+          const row = await tx.one<{ id: string }>(
+            `insert into ocs.service_licenses
+               (trade_id, license_number, license_type, qualifier_name,
+                qualifier_user_id, issued_on, expires_on,
+                max_active_engagements, service_counties, status)
+             values ($1,$2,$3::ocs.license_type,$4,$5,$6::date,$7::date,$8,$9,'active')
+             returning id`,
+            [
+              tradeId, body.licenseNumber, body.licenseType, body.qualifierName,
+              body.qualifierUserId ?? null, body.issuedOn ?? null,
+              body.expiresOn ?? null, body.maxActiveEngagements, body.serviceCounties,
+            ],
+          );
+          if (!row) throw badRequest('Could not record the licence.');
+
+          await writeAudit(tx, {
+            actorUserId: auth.userId,
+            actorEmail: auth.email,
+            action: 'admin.service_license_added',
+            entityType: 'service_license',
+            entityId: row.id,
+            summary: `Service licence ${body.licenseNumber} (${body.qualifierName})`,
+            after: { tradeId, licenseType: body.licenseType, expiresOn: body.expiresOn ?? null },
+            requestId: req.id,
+            ipAddress: clientIp(req),
+            userAgent: userAgent(req),
+          });
+
+          return { id: row.id, tradeId, licenseNumber: body.licenseNumber, status: 'active' };
+        },
+        { reason: 'add_service_license' },
+      );
+
+      reply.code(201);
+      return result;
+    },
+  );
+
+  app.post(
+    '/api/supervision/supervisors',
+    { preHandler: [requireApiAuth, requireAdminRole] },
+    async (req, reply) => {
+      const auth = req.apiAuth!;
+      const body = parse(
+        z.object({
+          userId: z.string().uuid(),
+          displayName: z.string().trim().min(1).max(200),
+          phone: z.string().trim().max(40).nullable().optional(),
+          tradeIds: z.array(z.string().uuid()).max(30).default([]),
+          serviceCounties: z.array(z.string().max(60)).max(67).default([]),
+          maxActiveEngagements: z.number().int().min(1).max(100).default(12),
+          maxVisitsPerDay: z.number().int().min(1).max(30).default(8),
+        }),
+        req.body,
+        'supervisor',
+      );
+
+      const result = await withServiceContext(
+        async (tx) => {
+          /*
+           * The login must exist and must be a supervisor's.
+           *
+           * A supervisor record pointing at an administrator's login, or at
+           * nothing, produces a field screen that says "not linked to a
+           * supervisor record" for reasons nobody can see -- which is exactly
+           * the failure this endpoint is being added to end.
+           */
+          const user = await tx.one<{ id: string; app_role: string }>(
+            `select id, app_role::text as app_role from ocs.app_users
+              where id = $1 and deleted_at is null and is_active`,
+            [body.userId],
+          );
+          if (!user) throw badRequest('No active login with that id.');
+
+          const row = await tx.one<{ id: string }>(
+            `insert into ocs.supervisors
+               (user_id, display_name, phone, trade_ids, service_counties,
+                max_active_engagements, max_visits_per_day, is_active)
+             values ($1,$2,$3,$4,$5,$6,$7,true)
+             on conflict (user_id) do update
+               set display_name = excluded.display_name,
+                   phone = excluded.phone,
+                   trade_ids = excluded.trade_ids,
+                   service_counties = excluded.service_counties,
+                   max_active_engagements = excluded.max_active_engagements,
+                   max_visits_per_day = excluded.max_visits_per_day,
+                   is_active = true
+             returning id`,
+            [
+              body.userId, body.displayName, body.phone ?? null, body.tradeIds,
+              body.serviceCounties, body.maxActiveEngagements, body.maxVisitsPerDay,
+            ],
+          );
+          if (!row) throw badRequest('Could not record the supervisor.');
+
+          await writeAudit(tx, {
+            actorUserId: auth.userId,
+            actorEmail: auth.email,
+            action: 'admin.supervisor_added',
+            entityType: 'supervisor',
+            entityId: row.id,
+            summary: `Supervisor ${body.displayName}`,
+            after: { userId: body.userId, appRole: user.app_role },
+            requestId: req.id,
+            ipAddress: clientIp(req),
+            userAgent: userAgent(req),
+          });
+
+          return {
+            id: row.id,
+            userId: body.userId,
+            displayName: body.displayName,
+            // Said back, because a supervisor record on a login that is not a
+            // SITE_SUPERVISOR still will not open the field screen.
+            appRole: user.app_role,
+            fieldScreenReady: user.app_role === 'SITE_SUPERVISOR',
+          };
+        },
+        { reason: 'add_supervisor' },
       );
 
       reply.code(201);

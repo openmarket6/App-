@@ -10,7 +10,12 @@
  * nothing to attach a visit to."
  */
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { dbConfigured, applyMigrations, client, ownerUrl, ALPHA } from './helpers/db.js';
+
+const ROOT_SRC = join(dirname(fileURLToPath(import.meta.url)), '../src');
 
 const describeIfDb = dbConfigured ? describe : describe.skip;
 const STAFF = { email: 'eng-staff@test.invalid', password: 'EngagementStaff2026!' };
@@ -168,6 +173,168 @@ describeIfDb('opening a supervision engagement', () => {
       const res = await open(app, t, { clientId: ALPHA, projectId });
       expect(res.statusCode).toBe(400);
       expect(JSON.parse(res.body).message).toMatch(/which trade/i);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+/**
+ * Recording the firm's own licences and supervisors.
+ *
+ * Both existed only under /v1 on Supabase auth, so neither was reachable from
+ * the application — and the result was visible in production as two empty
+ * tables. Every managed-licence engagement was refused for want of a licence,
+ * and a SITE_SUPERVISOR opening the field screen was told their account "is not
+ * linked to a supervisor record yet" with no way for anyone to link it.
+ */
+describeIfDb('recording what OCS itself holds', () => {
+  const ADMIN = { email: 'sv-admin@test.invalid', password: 'SvAdminPass2026!' };
+  const TECH = { email: 'sv-tech@test.invalid', password: 'SvTechPass2026!' };
+  const FIELD = 'sv-field@test.invalid';
+  let tradeId = '';
+  let fieldUserId = '';
+
+  beforeAll(async () => {
+    await applyMigrations();
+    const c = client(ownerUrl!);
+    await c.connect();
+    try {
+      await c.query('create extension if not exists pgcrypto');
+      await c.query('delete from ocs.app_users where email in ($1,$2,$3)', [
+        ADMIN.email, TECH.email, FIELD,
+      ]);
+      await c.query(
+        `insert into ocs.app_users (email, name, app_role, is_active, password_hash) values
+           ($1,'Admin','ADMIN',true, crypt($2, gen_salt('bf',10))),
+           ($3,'Tech','PERMIT_TECH',true, crypt($4, gen_salt('bf',10)))`,
+        [ADMIN.email, ADMIN.password, TECH.email, TECH.password],
+      );
+      fieldUserId = (await c.query(
+        `insert into ocs.app_users (email, name, app_role, is_active)
+         values ($1,'Field Sam','SITE_SUPERVISOR',true) returning id`,
+        [FIELD],
+      )).rows[0].id;
+      tradeId = (await c.query('select id from ocs.trades limit 1')).rows[0].id;
+    } finally {
+      await c.end();
+    }
+  });
+
+  beforeEach(async () => {
+    const c = client(ownerUrl!);
+    await c.connect();
+    try {
+      await c.query('delete from ocs.service_licenses');
+      await c.query('delete from ocs.supervisors where user_id = $1', [fieldUserId]);
+    } finally {
+      await c.end();
+    }
+  });
+
+  const tok = async (
+    app: Awaited<ReturnType<typeof server>>, who: { email: string; password: string },
+  ) => {
+    const res = await app.inject({ method: 'POST', url: '/api/auth/login', payload: who });
+    expect(res.statusCode).toBe(200);
+    return JSON.parse(res.body).accessToken as string;
+  };
+
+  it('records a qualifying licence from a native session', async () => {
+    const app = await server();
+    try {
+      const t = await tok(app, ADMIN);
+      const res = await app.inject({
+        method: 'POST', url: '/api/supervision/licenses',
+        headers: { authorization: `Bearer ${t}` },
+        payload: {
+          tradeId, licenseNumber: 'CGC1520001', licenseType: 'state_certified',
+          qualifierName: 'Ryan Q', expiresOn: '2030-01-01',
+        },
+      });
+      expect(res.statusCode, res.body).toBe(201);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('writes the licence type instead of leaning on the default', () => {
+    /*
+     * The /v1 original omitted license_type and relied on the column default.
+     * That is right only for as long as the default is the right answer, and a
+     * county licence recorded as state-certified is the kind of wrong a
+     * regulator finds rather than we do.
+     */
+    const src = readFileSync(join(ROOT_SRC, 'routes/compat/supervision.ts'), 'utf8');
+    expect(src).toContain('::ocs.license_type');
+  });
+
+  it('refuses a permit tech — this is the firm\'s own licence', async () => {
+    const app = await server();
+    try {
+      const t = await tok(app, TECH);
+      const res = await app.inject({
+        method: 'POST', url: '/api/supervision/licenses',
+        headers: { authorization: `Bearer ${t}` },
+        payload: { tradeId, licenseNumber: 'X', qualifierName: 'Y' },
+      });
+      expect(res.statusCode).toBe(403);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('links a supervisor record to a login', async () => {
+    const app = await server();
+    try {
+      const t = await tok(app, ADMIN);
+      const res = await app.inject({
+        method: 'POST', url: '/api/supervision/supervisors',
+        headers: { authorization: `Bearer ${t}` },
+        payload: { userId: fieldUserId, displayName: 'Field Sam', tradeIds: [tradeId] },
+      });
+      expect(res.statusCode, res.body).toBe(201);
+      const body = JSON.parse(res.body);
+      // Said back plainly: a supervisor record on a login that is not a
+      // SITE_SUPERVISOR still will not open the field screen.
+      expect(body.fieldScreenReady).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('says so when the login could not open the field screen anyway', async () => {
+    const app = await server();
+    try {
+      const t = await tok(app, ADMIN);
+      const admin = await app.inject({
+        method: 'GET', url: '/api/auth/me', headers: { authorization: `Bearer ${t}` },
+      });
+      const adminId = JSON.parse(admin.body).user.id;
+      const res = await app.inject({
+        method: 'POST', url: '/api/supervision/supervisors',
+        headers: { authorization: `Bearer ${t}` },
+        payload: { userId: adminId, displayName: 'Not A Supervisor' },
+      });
+      expect(res.statusCode).toBe(201);
+      expect(JSON.parse(res.body).fieldScreenReady).toBe(false);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('refuses a login that does not exist', async () => {
+    const app = await server();
+    try {
+      const t = await tok(app, ADMIN);
+      const res = await app.inject({
+        method: 'POST', url: '/api/supervision/supervisors',
+        headers: { authorization: `Bearer ${t}` },
+        payload: {
+          userId: '00000000-0000-0000-0000-000000000000', displayName: 'Ghost',
+        },
+      });
+      expect(res.statusCode).toBe(400);
     } finally {
       await app.close();
     }
