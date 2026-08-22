@@ -520,6 +520,17 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
         name: z.string().trim().max(200).optional(),
         role: z.enum(ROLES),
         clientId: z.string().uuid().optional(),
+        /**
+         * Whether this person administers their own company's logins.
+         *
+         * The field did not exist, so it was silently dropped and every
+         * contractor login was created as an ordinary member. The consequence
+         * only showed up two steps later: the company's owner tried to add
+         * their own crew and got "Only your company administrator can add
+         * logins" -- with no administrator existing, and no way to make one
+         * except editing the database by hand.
+         */
+        clientAdmin: z.boolean().optional(),
       }),
       req.body,
       'invitation',
@@ -544,20 +555,63 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
 
     const created = await withServiceContext(
       async (tx) => {
+        /*
+         * THE FIRST LOGIN A CONTRACTOR GETS ADMINISTERS THEIR OWN COMPANY.
+         *
+         * Without this there is no way in. Adding a teammate requires a company
+         * administrator, appointing one requires an administrator, and the
+         * first person has nobody above them -- so every contractor would
+         * depend on OCS staff for every login they ever need, forever, and the
+         * only symptom would be a 403 two screens away from the cause.
+         */
+        /*
+         * A contractor's administrator may appoint another; an ordinary member
+         * cannot promote anybody, including themselves on a re-invite. Checked
+         * against the database rather than the token, because client_admin is
+         * not a claim and a token minted before a promotion would be stale.
+         */
+        if (authCtx.role === 'CLIENT' && body.clientAdmin === true) {
+          const me = await tx.one<{ client_admin: boolean }>(
+            'select client_admin from ocs.app_users where id = $1',
+            [authCtx.userId],
+          );
+          if (!me?.client_admin) {
+            throw forbidden('Only your company administrator can appoint another administrator');
+          }
+        }
+
+        let clientAdmin = body.clientAdmin === true;
+        if (body.role === 'CLIENT' && body.clientId && !clientAdmin) {
+          const existing = await tx.one<{ n: string }>(
+            `select count(*)::text as n from ocs.app_users
+              where client_id = $1 and deleted_at is null
+                and lower(email) <> lower($2)`,
+            [body.clientId, body.email.trim()],
+          );
+          if (Number(existing?.n ?? 0) === 0) clientAdmin = true;
+        }
+
         const row = await tx.one<UserRow>(
           `insert into ocs.app_users
-             (email, name, app_role, client_id, invite_token, invite_expires_at, is_active)
-           values ($1,$2,$3::ocs.app_role,$4,$5,$6,true)
+             (email, name, app_role, client_id, invite_token, invite_expires_at,
+              is_active, client_admin)
+           values ($1,$2,$3::ocs.app_role,$4,$5,$6,true,$7)
            on conflict (lower(email)) do update
              set name = coalesce(excluded.name, ocs.app_users.name),
                  app_role = excluded.app_role,
                  client_id = excluded.client_id,
                  invite_token = excluded.invite_token,
                  invite_expires_at = excluded.invite_expires_at,
-                 is_active = true
+                 is_active = true,
+                 -- Never DEMOTES on a re-invite: reissuing somebody's link is
+                 -- not a decision about their authority.
+                 client_admin = ocs.app_users.client_admin or excluded.client_admin
            returning id, email, name, app_role, client_id, is_active, password_hash,
-                     token_version, created_at, last_login_at`,
-          [body.email.trim(), body.name ?? null, body.role, body.clientId ?? null, token, expires],
+                     token_version, created_at, last_login_at, client_admin`,
+          [
+            body.email.trim(), body.name ?? null, body.role, body.clientId ?? null,
+            token, expires, clientAdmin,
+          ],
         );
         if (!row) throw badRequest('Could not create the invitation');
 
@@ -569,6 +623,7 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
           entityType: 'app_user',
           entityId: row.id,
           summary: `Invited ${body.email} as ${body.role}`,
+          after: { clientAdmin },
           requestId: req.id,
           ipAddress: clientIp(req),
           userAgent: userAgent(req),
