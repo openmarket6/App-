@@ -447,6 +447,145 @@ export async function municipalIntegrationRoutes(app: FastifyInstance): Promise<
     );
   });
 
+  /**
+   * House credentials: OUR municipal accounts, not a contractor's.
+   *
+   * Stored with a null company_id, which is what makes them house credentials.
+   * The tenant policy from 0008 then makes them invisible to every contractor
+   * automatically -- a company-less row can only match in service context -- so
+   * this needs no special read rule, only a route that is hard to reach.
+   *
+   * Platform admin plus MFA. These logins can pull permits under our license in
+   * every jurisdiction we work; they are the most valuable secrets in the
+   * system after the database itself.
+   */
+  app.put('/v1/admin/integrations/house-credentials', { preHandler: authenticate }, async (req) => {
+    const p = principalOf(req);
+    requirePlatformRole(p, 'admin');
+    requireMfa(p);
+
+    if (!env.INTEGRATION_ENCRYPTION_KEY) {
+      throw serviceUnavailable('Credential storage is not configured on this server');
+    }
+
+    const body = parse(
+      z.object({
+        integrationKey: z.string().trim().min(1).max(80),
+        /**
+         * Null means the credential covers every agency on this platform, which
+         * is the normal case for Accela: one account, many agencies.
+         */
+        municipalityId: z.string().uuid().nullable().optional(),
+        username: z.string().trim().min(1).max(200),
+        secret: z.string().min(1).max(2000),
+      }),
+      req.body,
+      'house credentials',
+    );
+
+    const municipalityId = body.municipalityId ?? null;
+
+    return withServiceContext(
+      async (tx) => {
+        if (municipalityId) {
+          const muni = await tx.one<{ id: string }>(
+            `select id from ocs.municipalities where id = $1`,
+            [municipalityId],
+          );
+          if (!muni) throw notFound('Municipality');
+        }
+
+        /**
+         * Two conflict targets, because the uniqueness of a house credential is
+         * enforced by two partial indexes (0017) rather than one constraint:
+         * NULL is never equal to NULL, so the table's own unique constraint
+         * cannot see these rows at all.
+         */
+        const row = municipalityId
+          ? await tx.one<{ id: string }>(
+              `insert into ocs.integration_credentials
+                 (company_id, municipality_id, integration_key, username, secret_encrypted, created_by)
+               values (null, $1, $2, $3, pgp_sym_encrypt($4, $5), $6)
+               on conflict (integration_key, municipality_id)
+                 where company_id is null
+                 do update set username = excluded.username,
+                               secret_encrypted = excluded.secret_encrypted,
+                               is_active = true,
+                               last_error = null
+               returning id`,
+              [
+                municipalityId, body.integrationKey, body.username,
+                body.secret, env.INTEGRATION_ENCRYPTION_KEY, p.userId,
+              ],
+            )
+          : await tx.one<{ id: string }>(
+              `insert into ocs.integration_credentials
+                 (company_id, municipality_id, integration_key, username, secret_encrypted, created_by)
+               values (null, null, $1, $2, pgp_sym_encrypt($3, $4), $5)
+               on conflict (integration_key)
+                 where company_id is null and municipality_id is null
+                 do update set username = excluded.username,
+                               secret_encrypted = excluded.secret_encrypted,
+                               is_active = true,
+                               last_error = null
+               returning id`,
+              [
+                body.integrationKey, body.username,
+                body.secret, env.INTEGRATION_ENCRYPTION_KEY, p.userId,
+              ],
+            );
+
+        await writeAudit(tx, {
+          actorUserId: p.userId,
+          action: 'integration.house_credentials_stored',
+          entityType: 'integration_credential',
+          entityId: row!.id,
+          summary: `House credentials stored for ${body.integrationKey}`,
+          // Deliberately records the username and never the secret: an audit
+          // log that contains the credential is a second copy to protect.
+          after: {
+            integrationKey: body.integrationKey,
+            municipalityId,
+            username: body.username,
+          },
+          requestId: req.id,
+        });
+
+        logger.info(
+          { integrationKey: body.integrationKey, municipalityId },
+          'house credentials stored',
+        );
+
+        return { id: row!.id, integrationKey: body.integrationKey, municipalityId, isHouse: true };
+      },
+      { reason: 'store_house_credentials' },
+    );
+  });
+
+  /** House credentials we hold. Usernames and state only -- never a secret. */
+  app.get('/v1/admin/integrations/house-credentials', { preHandler: authenticate }, async (req) => {
+    const p = principalOf(req);
+    requirePlatformRole(p, 'admin');
+
+    return withServiceContext(
+      async (tx) => {
+        const credentials = await tx.many(
+          `select c.id, c.integration_key as "integrationKey",
+                  c.municipality_id as "municipalityId", m.name as "municipalityName",
+                  c.username, c.is_active as "isActive",
+                  c.last_verified_at as "lastVerifiedAt", c.last_error as "lastError",
+                  c.created_at as "createdAt"
+             from ocs.integration_credentials c
+             left join ocs.municipalities m on m.id = c.municipality_id
+            where c.company_id is null
+            order by c.integration_key, m.name nulls first`,
+        );
+        return { credentials, total: credentials.length };
+      },
+      { reason: 'list_house_credentials' },
+    );
+  });
+
   /** Platform reference: what each vendor is and how reachable it is. */
   app.get('/v1/admin/integrations/platforms', { preHandler: authenticate }, async (req) => {
     requirePlatformRole(principalOf(req), 'staff');
