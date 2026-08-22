@@ -21,7 +21,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { withServiceContext } from '../../db/tenant.js';
-import { requireApiAuth, requireCapability } from './auth.js';
+import { requireApiAuth, requireCapability, requireNativeMfa } from './auth.js';
 import { parse, clientIp } from '../../lib/http-helpers.js';
 import { forbidden, badRequest, notFound } from '../../lib/errors.js';
 import { env } from '../../config/env.js';
@@ -341,11 +341,11 @@ export async function compatAdminRoutes(app: FastifyInstance): Promise<void> {
    * product could not open the screen at all -- not a permission they could be
    * granted, a different authentication system.
    *
-   * MFA IS NOT ENFORCED HERE, AND THAT IS A REAL GAP. These credentials pull
-   * permits under our licence in every jurisdiction we work; they deserve a
-   * second factor and the /v1 route was right to demand one. Native
-   * multi-factor does not exist yet, so this is gated on ADMIN alone. When it
-   * lands, this endpoint must require it -- the /v1 version is the model.
+   * WRITING a credential requires a second factor; reading the list requires
+   * only ADMIN. The asymmetry is deliberate: seeing which accounts exist is
+   * how an administrator notices one they did not expect, and putting that
+   * behind a factor they may not have set up yet would hide exactly the thing
+   * worth noticing.
    */
   app.get(
     '/api/admin/integrations/house-credentials',
@@ -365,7 +365,7 @@ export async function compatAdminRoutes(app: FastifyInstance): Promise<void> {
               order by c.integration_key, m.name nulls first`,
           );
           // Usernames and state only. The secret is never returned by any path.
-          return { credentials, total: credentials.length, mfaEnforced: false };
+          return { credentials, total: credentials.length, mfaEnforced: true };
         },
         { reason: 'list_house_credentials' },
       ),
@@ -373,7 +373,10 @@ export async function compatAdminRoutes(app: FastifyInstance): Promise<void> {
 
   app.put(
     '/api/admin/integrations/house-credentials',
-    { preHandler: [requireApiAuth, requireAdmin] },
+    // Now that native MFA exists, this demands it. These credentials pull
+    // permits under our licence in every jurisdiction we work, and a stolen
+    // password alone must not be enough to write one.
+    { preHandler: [requireApiAuth, requireAdmin, requireNativeMfa] },
     async (req) => {
       const auth = req.apiAuth!;
 

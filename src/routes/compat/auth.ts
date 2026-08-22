@@ -13,7 +13,7 @@ import '@fastify/cookie';
 import { z } from 'zod';
 import { withServiceContext } from '../../db/tenant.js';
 import { parse, clientIp, userAgent } from '../../lib/http-helpers.js';
-import { unauthorized, conflict, badRequest, forbidden } from '../../lib/errors.js';
+import { unauthorized, conflict, badRequest, forbidden, serviceUnavailable } from '../../lib/errors.js';
 import { writeAudit } from '../../lib/audit.js';
 import { logger } from '../../lib/logger.js';
 import { env } from '../../config/env.js';
@@ -21,6 +21,7 @@ import {
   REFRESH_COOKIE, REFRESH_COOKIE_PATH, publicUser, hashPassword, verifyPassword,
   assertPasswordAcceptable, signAccessToken, issueRefreshToken, consumeRefreshToken,
   revokeRefreshToken, findUserByEmail, findUserById, recordLogin,
+  issueMfaChallenge, consumeMfaChallenge, hashRecoveryCode,
   type UserRow, type AccessClaims,
 } from '../../auth/native.js';
 import type { Role } from '../../domain/capabilities.js';
@@ -46,12 +47,22 @@ async function sessionResponse(
   reply: FastifyReply,
   user: UserRow,
   status = 200,
+  /**
+   * Whether a second factor was presented to create this session.
+   *
+   * Passed in rather than read from the user row, because it is a fact about
+   * how this session was obtained. A refresh carries it forward; a fresh
+   * password-only sign-in does not acquire it just because the account has MFA
+   * turned on.
+   */
+  mfa = false,
 ) {
   const claims: AccessClaims = {
     userId: user.id,
     role: user.app_role,
     clientId: user.client_id,
     email: user.email,
+    mfa,
   };
 
   const refresh = await issueRefreshToken(user, {
@@ -190,9 +201,51 @@ export async function compatAuthRoutes(app: FastifyInstance): Promise<void> {
       throw generic();
     }
 
+    /*
+     * Password accepted. If this account carries a second factor, that is only
+     * half of sign-in: no session is issued here, and the ticket returned
+     * grants nothing except the right to present a code.
+     */
+    if (user.mfa_enabled) {
+      const challenge = await issueMfaChallenge(user.id, {
+        ip: clientIp(req), userAgent: userAgent(req),
+      });
+      logger.info({ userId: user.id }, 'password accepted; second factor required');
+      reply.code(200);
+      return {
+        mfaRequired: true,
+        challengeToken: challenge.token,
+        expiresAt: challenge.expiresAt.toISOString(),
+      };
+    }
+
     await recordLogin(user.id);
     logger.info({ userId: user.id, role: user.app_role }, 'sign-in');
     return sessionResponse(req, reply, user);
+  });
+
+  /**
+   * Second step: the code from the authenticator, or a recovery code.
+   *
+   * Rate limited harder than the password step. Six digits is a million
+   * possibilities, which is a lot for a person and very little for a script.
+   */
+  app.post('/api/auth/mfa/challenge', {
+    config: { rateLimit: { max: 10, timeWindow: '5 minutes' } },
+  }, async (req, reply) => {
+    const body = parse(
+      z.object({
+        challengeToken: z.string().min(10).max(200),
+        code: z.string().trim().min(6).max(20),
+      }),
+      req.body,
+      'verification',
+    );
+
+    const user = await consumeMfaChallenge(body.challengeToken, body.code);
+    await recordLogin(user.id);
+    logger.info({ userId: user.id }, 'sign-in with second factor');
+    return sessionResponse(req, reply, user, 200, true);
   });
 
   app.post('/api/auth/refresh', async (req, reply) => {
@@ -200,8 +253,17 @@ export async function compatAuthRoutes(app: FastifyInstance): Promise<void> {
     if (!token) throw unauthorized('No session');
 
     // Rotates the token: the presented one is revoked and a fresh one issued.
-    const user = await consumeRefreshToken(token);
-    return sessionResponse(req, reply, user);
+    const { user, mfa } = await consumeRefreshToken(token);
+
+    /*
+     * The second factor carries forward across a refresh, and must.
+     *
+     * A refresh is the SAME session continuing, not a new sign-in. Dropping
+     * the claim would silently demote an administrator fifteen minutes into
+     * their work, and they would be told to re-authenticate for something they
+     * already had authenticated for.
+     */
+    return sessionResponse(req, reply, user, 200, mfa);
   });
 
   app.post('/api/auth/logout', async (req, reply) => {
@@ -209,6 +271,216 @@ export async function compatAuthRoutes(app: FastifyInstance): Promise<void> {
     if (token) await revokeRefreshToken(token);
     reply.clearCookie(REFRESH_COOKIE, { path: REFRESH_COOKIE_PATH });
     return { ok: true };
+  });
+
+  /**
+   * Begin enrolling a second factor.
+   *
+   * Issues a secret and returns it once, with the URI an authenticator scans.
+   * It is NOT switched on here: the factor only becomes real once a code from
+   * it has been verified below. Enabling on issue would lock someone out of
+   * their own account the moment they closed the tab before scanning.
+   */
+  app.post('/api/auth/mfa/setup', { preHandler: requireApiAuth }, async (req) => {
+    const auth = req.apiAuth!;
+
+    if (!env.INTEGRATION_ENCRYPTION_KEY) {
+      throw serviceUnavailable(
+        'Two-factor authentication cannot be set up on this server: there is no ' +
+          'encryption key configured, and storing the secret in the clear would be ' +
+          'worse than having no second factor at all.',
+      );
+    }
+
+    const { generateSecret, otpauthUri, generateRecoveryCodes } = await import('../../auth/totp.js');
+    const secret = generateSecret();
+    const recovery = generateRecoveryCodes();
+
+    return withServiceContext(
+      async (tx) => {
+        const current = await tx.one<{ mfa_enabled: boolean }>(
+          `select mfa_enabled from ocs.app_users where id = $1`, [auth.userId],
+        );
+        if (current?.mfa_enabled) {
+          throw conflict(
+            'Two-factor authentication is already on for this account. Turn it off ' +
+              'first if you are moving to a new device.',
+          );
+        }
+
+        await tx.query(
+          `update ocs.app_users
+              set mfa_secret_encrypted = pgp_sym_encrypt($2, $3),
+                  mfa_recovery_hashes = $4::text[],
+                  mfa_enabled = false
+            where id = $1`,
+          [auth.userId, secret, env.INTEGRATION_ENCRYPTION_KEY, recovery.map(hashRecoveryCode)],
+        );
+
+        return {
+          secret,
+          otpauthUri: otpauthUri({
+            secret,
+            account: auth.email,
+            issuer: 'One Contractor Solutions',
+          }),
+          /*
+           * Shown once, now. They are stored hashed, so this is the only moment
+           * they can be read -- which is exactly the property that makes them
+           * safe to keep and the reason to say so plainly on the screen.
+           */
+          recoveryCodes: recovery,
+          enabled: false,
+          next: 'Enter a code from your authenticator to finish turning this on.',
+        };
+      },
+      { reason: 'mfa_setup' },
+    );
+  });
+
+  /** Verify a code and switch the factor on. */
+  app.post('/api/auth/mfa/enable', { preHandler: requireApiAuth }, async (req) => {
+    const auth = req.apiAuth!;
+    const body = parse(
+      z.object({ code: z.string().trim().min(6).max(10) }),
+      req.body,
+      'verification',
+    );
+
+    return withServiceContext(
+      async (tx) => {
+        const row = await tx.one<{ secret: string | null; mfa_enabled: boolean }>(
+          `select pgp_sym_decrypt(mfa_secret_encrypted, $2) as secret, mfa_enabled
+             from ocs.app_users where id = $1`,
+          [auth.userId, env.INTEGRATION_ENCRYPTION_KEY ?? ''],
+        );
+        if (!row?.secret) {
+          throw badRequest('Start the setup first — there is no secret to verify against.');
+        }
+
+        const { verifyTotp } = await import('../../auth/totp.js');
+        if (!verifyTotp(row.secret, body.code)) {
+          throw badRequest(
+            'That code did not match. Check your phone\'s clock is set automatically — ' +
+              'a drift of more than a minute is the usual cause.',
+          );
+        }
+
+        await tx.query(
+          `update ocs.app_users
+              set mfa_enabled = true, mfa_enrolled_at = now()
+            where id = $1`,
+          [auth.userId],
+        );
+
+        await writeAudit(tx, {
+          companyId: auth.clientId,
+          actorUserId: auth.userId,
+          actorEmail: auth.email,
+          action: 'auth.mfa_enabled',
+          entityType: 'app_user',
+          entityId: auth.userId,
+          summary: 'Two-factor authentication turned on',
+          requestId: req.id,
+          ipAddress: clientIp(req),
+        });
+
+        return {
+          enabled: true,
+          /*
+           * The CURRENT session does not retroactively become
+           * multi-factor-verified. It was created with a password alone, and
+           * saying otherwise would hand full privileges to whoever is holding
+           * a session that never presented a code.
+           */
+          note: 'Sign in again to use anything that requires your authenticator.',
+        };
+      },
+      { reason: 'mfa_enable' },
+    );
+  });
+
+  /**
+   * Turn it off.
+   *
+   * Requires a current code, not just a session. Otherwise anyone holding a
+   * borrowed laptop could remove the protection and the protection was never
+   * really there.
+   */
+  app.post('/api/auth/mfa/disable', { preHandler: requireApiAuth }, async (req) => {
+    const auth = req.apiAuth!;
+    const body = parse(
+      z.object({ code: z.string().trim().min(6).max(20) }),
+      req.body,
+      'verification',
+    );
+
+    return withServiceContext(
+      async (tx) => {
+        const row = await tx.one<{ secret: string | null; hashes: string[]; mfa_enabled: boolean }>(
+          `select pgp_sym_decrypt(mfa_secret_encrypted, $2) as secret,
+                  mfa_recovery_hashes as hashes, mfa_enabled
+             from ocs.app_users where id = $1`,
+          [auth.userId, env.INTEGRATION_ENCRYPTION_KEY ?? ''],
+        );
+        if (!row?.mfa_enabled) throw conflict('Two-factor authentication is not on');
+
+        const { verifyTotp } = await import('../../auth/totp.js');
+        const supplied = body.code.trim().toUpperCase();
+        const ok = (row.secret && verifyTotp(row.secret, supplied))
+          || row.hashes.includes(hashRecoveryCode(supplied));
+        if (!ok) throw badRequest('That code is not right');
+
+        await tx.query(
+          `update ocs.app_users
+              set mfa_enabled = false, mfa_secret_encrypted = null,
+                  mfa_enrolled_at = null, mfa_recovery_hashes = '{}',
+                  -- Every existing session loses its verified standing: the
+                  -- factor those sessions were checked against no longer exists.
+                  token_version = token_version + 1
+            where id = $1`,
+          [auth.userId],
+        );
+
+        await writeAudit(tx, {
+          companyId: auth.clientId,
+          actorUserId: auth.userId,
+          actorEmail: auth.email,
+          action: 'auth.mfa_disabled',
+          entityType: 'app_user',
+          entityId: auth.userId,
+          summary: 'Two-factor authentication turned OFF',
+          requestId: req.id,
+          ipAddress: clientIp(req),
+        });
+
+        return { enabled: false };
+      },
+      { reason: 'mfa_disable' },
+    );
+  });
+
+  /** Whether this account has a second factor, and whether this session used it. */
+  app.get('/api/auth/mfa', { preHandler: requireApiAuth }, async (req) => {
+    const auth = req.apiAuth!;
+    return withServiceContext(
+      async (tx) => {
+        const row = await tx.one<{ mfa_enabled: boolean; enrolled_at: string | null; codes: number }>(
+          `select mfa_enabled, mfa_enrolled_at as enrolled_at,
+                  coalesce(array_length(mfa_recovery_hashes, 1), 0) as codes
+             from ocs.app_users where id = $1`,
+          [auth.userId],
+        );
+        return {
+          enabled: Boolean(row?.mfa_enabled),
+          enrolledAt: row?.enrolled_at ?? null,
+          recoveryCodesRemaining: Number(row?.codes ?? 0),
+          // The distinction that matters to a screen deciding what to offer.
+          sessionVerified: auth.mfa === true,
+        };
+      },
+      { reason: 'mfa_status' },
+    );
   });
 
   app.get('/api/auth/me', { preHandler: requireApiAuth }, async (req) => {
@@ -358,7 +630,43 @@ export async function requireApiAuth(req: FastifyRequest, _reply: FastifyReply):
     role: user.app_role,
     clientId: user.client_id,
     email: user.email,
+    /*
+     * Taken from the TOKEN, not the user row -- the one claim here that is.
+     *
+     * Everything above is re-read so a role change takes effect on the next
+     * request. This cannot be: the question is whether a second factor was
+     * presented to obtain THIS session, which is a fact about the session and
+     * nothing else. Reading mfa_enabled from the user row would let a session
+     * created before enrolment silently gain the privileges of one created
+     * after, which is the opposite of what enrolling is for.
+     */
+    mfa: claims.mfa === true,
   };
+}
+
+/**
+ * Refuses a caller who did not present a second factor for this session.
+ *
+ * Applied to what an attacker holding only a stolen password would go for:
+ * municipal credentials, moving money, changing who has access.
+ */
+/*
+ * async, and that is load-bearing rather than stylistic.
+ *
+ * Fastify decides how to run a hook from its shape: a hook that neither
+ * returns a promise nor calls `done` is a hook Fastify waits on forever. A
+ * synchronous version of this function did not reject the request -- it hung
+ * it, which is a far worse failure than a 403 because nothing in the log says
+ * anything went wrong.
+ */
+export async function requireNativeMfa(req: FastifyRequest, _reply: FastifyReply): Promise<void> {
+  if (!req.apiAuth) throw unauthorized();
+  if (!req.apiAuth.mfa) {
+    throw forbidden(
+      'This action needs your authenticator code. Sign in again and complete the ' +
+        'second step, or turn on two-factor authentication if you have not yet.',
+    );
+  }
 }
 
 /** Refuses a caller whose role lacks any of the required capabilities. */
