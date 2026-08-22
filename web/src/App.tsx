@@ -10,6 +10,7 @@ import Dashboard from './pages/Dashboard.tsx';
 import PortalHome from './pages/PortalHome.tsx';
 import PortalFiles from './pages/PortalFiles.tsx';
 import PortalBilling from './pages/PortalBilling.tsx';
+import ErrorBoundary from './components/ErrorBoundary.tsx';
 import PortalRequestPermit from './pages/PortalRequestPermit.tsx';
 import PortalTeam from './pages/PortalTeam.tsx';
 import PortalPermit from './pages/PortalPermit.tsx';
@@ -77,6 +78,12 @@ export default function App() {
 
   return (
     <Shell>
+      {/*
+        * Inside the shell on purpose: when a page fails, the navigation stays
+        * usable and the person can go somewhere else, instead of being left on
+        * a blank document with no way out but the back button.
+        */}
+      <ErrorBoundary label="page">
       <Routes>
         <Route path="/" element={<Navigate to={home} replace />} />
         <Route path="/dashboard" element={isStaff ? <Dashboard /> : <PortalHome />} />
@@ -115,6 +122,7 @@ export default function App() {
 
         <Route path="*" element={<Navigate to={home} replace />} />
       </Routes>
+      </ErrorBoundary>
     </Shell>
   );
 }
