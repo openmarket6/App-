@@ -1025,4 +1025,153 @@ export async function compatSupervisionRoutes(app: FastifyInstance): Promise<voi
       return result;
     },
   );
+
+  /**
+   * Open a supervision engagement.
+   *
+   * This existed only at POST /v1/supervision/engagements, which authenticates
+   * SUPABASE tokens. The application signs in natively, so that route was
+   * unreachable from every screen -- and an engagement is the row a site visit
+   * hangs off. No engagement meant no visit could be logged, which meant the
+   * supervision record this business sells could not be STARTED, let alone
+   * completed. The symptom was one line: "That permit has no supervision
+   * engagement yet, so there is nothing to attach a visit to."
+   *
+   * The trade is required and checked against the licences OCS actually holds.
+   * Refusing here, with the reason, beats accepting the job and discovering
+   * days later that nobody can qualify it.
+   */
+  app.post(
+    '/api/supervision/engagements',
+    { preHandler: [requireApiAuth, requireCapability('supervision:log')] },
+    async (req, reply) => {
+      const auth = req.apiAuth!;
+      const body = parse(
+        z.object({
+          clientId: z.string().uuid().optional(),
+          tradeId: z.string().uuid().optional(),
+          /** Accepted instead of tradeId, so a screen can send what it shows. */
+          trade: z.string().trim().max(60).optional(),
+          projectId: z.string().uuid().nullable().optional(),
+          permitId: z.string().uuid().nullable().optional(),
+          siteAddress: z.string().trim().max(300).nullable().optional(),
+          siteCity: z.string().trim().max(100).nullable().optional(),
+          siteCounty: z.string().trim().max(100).nullable().optional(),
+          scopeSummary: z.string().trim().max(4000).nullable().optional(),
+          estimatedValueCents: z.number().int().min(0).nullable().optional(),
+          requestedStartDate: z.string().date().nullable().optional(),
+          expectedCompletionDate: z.string().date().nullable().optional(),
+        }),
+        req.body,
+        'engagement',
+      );
+
+      const result = await withServiceContext(
+        async (tx) => {
+          /*
+           * The company comes from the work where it can, for the same reason
+           * as drafting: a permit or project belongs to exactly one contractor,
+           * and a second copy of that answer is a second place to be wrong.
+           */
+          let companyId = auth.role === 'CLIENT' ? auth.clientId : (body.clientId ?? null);
+          if (!companyId && (body.permitId || body.projectId)) {
+            const row = body.permitId
+              ? await tx.one<{ company_id: string }>(
+                  'select company_id from ocs.permits where id = $1 and deleted_at is null',
+                  [body.permitId],
+                )
+              : await tx.one<{ company_id: string }>(
+                  'select company_id from ocs.projects where id = $1 and deleted_at is null',
+                  [body.projectId],
+                );
+            companyId = row?.company_id ?? null;
+          }
+          if (!companyId) {
+            throw badRequest(
+              'A supervision engagement must belong to a contractor. Give a permitId, ' +
+                'a projectId, or a clientId.',
+            );
+          }
+
+          let tradeId = body.tradeId ?? null;
+          if (!tradeId && body.trade) {
+            const t = await tx.one<{ id: string }>(
+              `select id from ocs.trades
+                where upper(code) = upper($1) or upper(name) = upper($1) limit 1`,
+              [body.trade],
+            );
+            tradeId = t?.id ?? null;
+          }
+          if (!tradeId) {
+            throw badRequest('Say which trade this engagement is for.');
+          }
+
+          /*
+           * Checked against the licences OCS holds, not against the trades that
+           * exist. Our licence is what goes on the permit; a trade we cannot
+           * qualify is a job we cannot take, and saying so now is far cheaper
+           * than saying it after a contractor has scheduled work.
+           */
+          const licensed = await tx.one<{ n: string }>(
+            `select count(*)::text as n from ocs.service_licenses
+              where trade_id = $1 and deleted_at is null and status = 'active'
+                and (expires_on is null or expires_on >= current_date)`,
+            [tradeId],
+          );
+          if (Number(licensed?.n ?? 0) === 0) {
+            throw conflict(
+              'One Contractor Solutions does not currently hold an active licence for ' +
+                'that trade, so it cannot supervise this job. Register the licence ' +
+                'first, or file this permit under the contractor’s own licence.',
+            );
+          }
+
+          const row = await tx.one<{ id: string; engagement_number: number }>(
+            `insert into ocs.supervision_engagements
+               (company_id, trade_id, project_id, permit_id, site_address, site_city,
+                site_county, scope_summary, estimated_value_cents,
+                requested_start_date, expected_completion_date, requested_by, status)
+             values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::date,$11::date,$12,'requested')
+             returning id, engagement_number`,
+            [
+              companyId, tradeId, body.projectId ?? null, body.permitId ?? null,
+              body.siteAddress ?? null, body.siteCity ?? null, body.siteCounty ?? null,
+              body.scopeSummary ?? null, body.estimatedValueCents ?? null,
+              body.requestedStartDate ?? null, body.expectedCompletionDate ?? null,
+              auth.userId,
+            ],
+          );
+          if (!row) throw badRequest('Could not open the engagement.');
+
+          await writeAudit(tx, {
+            companyId,
+            actorUserId: auth.userId,
+            actorEmail: auth.email,
+            action: 'supervision.engagement_requested',
+            entityType: 'supervision_engagement',
+            entityId: row.id,
+            summary: `Supervision engagement #${row.engagement_number} opened`,
+            after: { tradeId, permitId: body.permitId ?? null, projectId: body.projectId ?? null },
+            requestId: req.id,
+            ipAddress: clientIp(req),
+            userAgent: userAgent(req),
+          });
+
+          return {
+            id: row.id,
+            engagementNumber: row.engagement_number,
+            clientId: companyId,
+            tradeId,
+            projectId: body.projectId ?? null,
+            permitId: body.permitId ?? null,
+            status: 'requested',
+          };
+        },
+        { reason: 'supervision_open_engagement' },
+      );
+
+      reply.code(201);
+      return result;
+    },
+  );
 }
