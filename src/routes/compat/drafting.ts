@@ -221,8 +221,47 @@ export async function compatDraftingRoutes(app: FastifyInstance): Promise<void> 
         'drafting request',
       );
 
-      const companyId = auth.role === 'CLIENT' ? auth.clientId : (body.clientId ?? null);
-      if (!companyId) throw badRequest('A drafting order must belong to a contractor');
+      /*
+       * The company comes from the work, not from the caller restating it.
+       *
+       * A project belongs to exactly one contractor, so asking the caller to
+       * name the contractor as well is redundant — and it failed closed: the
+       * request drawer sends projectId and no clientId, so every drafting order
+       * a staff member tried to raise came back "A drafting order must belong
+       * to a contractor" while pointing at a project that plainly does.
+       *
+       * Resolved server-side, from the project or the permit, which also means
+       * the answer cannot disagree with the row it is derived from.
+       */
+      let companyId = auth.role === 'CLIENT' ? auth.clientId : (body.clientId ?? null);
+      if (!companyId && (body.projectId || body.permitId)) {
+        companyId = await withServiceContext(
+          async (tx) => {
+            if (body.projectId) {
+              const row = await tx.one<{ company_id: string }>(
+                'select company_id from ocs.projects where id = $1 and deleted_at is null',
+                [body.projectId],
+              );
+              if (row) return row.company_id;
+            }
+            if (body.permitId) {
+              const row = await tx.one<{ company_id: string }>(
+                'select company_id from ocs.permits where id = $1 and deleted_at is null',
+                [body.permitId],
+              );
+              if (row) return row.company_id;
+            }
+            return null;
+          },
+          { reason: 'drafting_resolve_company' },
+        );
+      }
+      if (!companyId) {
+        throw badRequest(
+          'A drafting order must belong to a contractor. Give a projectId, a ' +
+            'permitId, or a clientId.',
+        );
+      }
 
       const result = await withServiceContext(
         async (tx) => {
