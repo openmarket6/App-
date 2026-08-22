@@ -24,10 +24,23 @@ import { requireApiAuth, requireCapability } from './auth.js';
 import { parse, clientIp, userAgent } from '../../lib/http-helpers.js';
 import { writeAudit } from '../../lib/audit.js';
 import { notFound, badRequest, forbidden, conflict } from '../../lib/errors.js';
+import { createHash } from 'node:crypto';
+import {
+  buildStorageKey, uploadObject, assertAllowedContentType,
+} from '../../services/storage.js';
 import {
   assessSupervision, SITE_VISIT_PURPOSES, SITE_VISIT_PURPOSE_LABELS,
   type SiteVisit,
 } from '../../shared/supervision.js';
+
+/** 20 MB, matching the general photo upload. */
+const MAX_PHOTO_BYTES = 20 * 1024 * 1024;
+
+/** Mirrors ocs.visit_photo_type. A type the enum rejects is a 500, not a 400. */
+const VISIT_PHOTO_TYPES = [
+  'site_overview', 'work_in_progress', 'completed_work', 'defect',
+  'materials', 'safety', 'other',
+] as const;
 
 /** Stored milestone codes carry more detail than the frontend's purposes. */
 const TO_PURPOSE: Record<string, string> = {
@@ -581,6 +594,200 @@ export async function compatSupervisionRoutes(app: FastifyInstance): Promise<voi
         },
         { reason: 'supervision_sign_off' },
       );
+    },
+  );
+
+  /**
+   * A photograph, attached to the visit it evidences.
+   *
+   * This endpoint was missing, and its absence was not cosmetic: nothing
+   * created a row in supervision_visit_photos, so `photo_count` stayed at zero
+   * on every visit, and the sign-off rule -- which refuses a visit with fewer
+   * photographs than it requires -- could never be satisfied. The supervision
+   * record the business sells could be started and never finished.
+   *
+   * Two facts are kept apart here on purpose. `takenAt` is what the device
+   * reported; `uploaded_at` is when it reached us. A large gap between them is
+   * exactly the pattern of photographs assembled after the fact rather than
+   * taken on site, and one column would hide it.
+   *
+   * A photo with no location is accepted. A supervisor on a roof with no signal
+   * is still on the roof, and refusing them teaches people to stop logging
+   * visits -- which costs far more evidence than a missing coordinate.
+   */
+  app.post(
+    '/api/supervision/visits/:id/photos',
+    { preHandler: [requireApiAuth, requireCapability('supervision:log')] },
+    async (req, reply) => {
+      const auth = req.apiAuth!;
+      const { id } = parse(z.object({ id: z.string().uuid() }), req.params, 'parameters');
+      const body = parse(
+        z.object({
+          fileName: z.string().trim().min(1).max(300),
+          contentType: z.string().trim().min(1).max(120),
+          sizeBytes: z.number().int().min(1).max(MAX_PHOTO_BYTES),
+          dataBase64: z.string().min(1),
+          photoType: z.enum(VISIT_PHOTO_TYPES).default('work_in_progress'),
+          caption: z.string().trim().max(500).nullable().optional(),
+          takenAt: z.string().datetime().nullable().optional(),
+          lat: z.number().min(-90).max(90).nullable().optional(),
+          lng: z.number().min(-180).max(180).nullable().optional(),
+        }),
+        req.body,
+        'photo',
+      );
+
+      if (!body.contentType.startsWith('image/')) {
+        throw badRequest('That is not an image.');
+      }
+      assertAllowedContentType(body.contentType);
+
+      const bytes = Buffer.from(body.dataBase64, 'base64');
+      if (bytes.byteLength === 0) throw badRequest('The photo came through empty');
+      if (bytes.byteLength > MAX_PHOTO_BYTES) {
+        throw badRequest('That photo is too large. Around 20 MB is the limit.');
+      }
+      /*
+       * A truncated photograph looks perfectly fine in a list until somebody
+       * opens it as evidence, which is the worst possible moment to find out.
+       */
+      if (Math.abs(bytes.byteLength - body.sizeBytes) > 16) {
+        throw badRequest('That photo did not arrive intact — the size does not match. Try again.');
+      }
+
+      const result = await withServiceContext(
+        async (tx) => {
+          const visit = await tx.one<{
+            id: string; company_id: string; status: string; supervisor_id: string | null;
+            permit_id: string | null; project_id: string | null;
+            photo_count: number; required_photo_count: number;
+          }>(
+            `select v.id, v.company_id, v.status::text as status, v.supervisor_id,
+                    e.permit_id, p.project_id, v.photo_count, v.required_photo_count
+               ${VISIT_FROM}
+              where v.id = $1
+              for update of v`,
+            [id],
+          );
+          if (!visit) throw notFound('Site visit');
+          if (visit.status === 'completed') {
+            throw conflict(
+              'That visit is already signed off. Photographs added afterwards would not ' +
+                'be part of the record that was signed.',
+            );
+          }
+
+          const supervisorId = await supervisorIdFor(tx, auth.userId);
+          if (!supervisorId) {
+            throw forbidden(
+              'This account is not linked to a supervisor record. An administrator ' +
+                'needs to finish the setup.',
+            );
+          }
+          if (visit.supervisor_id && visit.supervisor_id !== supervisorId) {
+            throw forbidden(
+              'This visit is assigned to a different supervisor. A visit records who ' +
+                'was actually on site.',
+            );
+          }
+
+          const sha256 = createHash('sha256').update(bytes).digest('hex');
+
+          const doc = await tx.one<{ id: string }>(
+            `insert into ocs.documents
+               (company_id, permit_id, project_id, name, category,
+                captured_at, geo_lat, geo_lng, uploaded_by, version_count,
+                is_client_visible)
+             values ($1,$2,$3,$4,'photo',$5::timestamptz,$6,$7,$8,1,true)
+             returning id`,
+            [
+              visit.company_id, visit.permit_id, visit.project_id, body.fileName,
+              body.takenAt ?? null, body.lat ?? null, body.lng ?? null, auth.userId,
+            ],
+          );
+
+          const key = buildStorageKey({
+            companyId: visit.company_id, documentId: doc!.id,
+            versionNumber: 1, fileName: body.fileName,
+          });
+          const stored = await uploadObject(key, bytes, body.contentType);
+
+          const version = await tx.one<{ id: string }>(
+            `insert into ocs.document_versions
+               (company_id, document_id, version_number, storage_bucket, storage_key,
+                file_name, content_type, byte_size, checksum_sha256, uploaded_by, upload_state)
+             values ($1,$2,1,$3,$4,$5,$6,$7,$8,$9,'stored')
+             returning id`,
+            [
+              visit.company_id, doc!.id, stored.bucket, stored.key, body.fileName,
+              body.contentType, bytes.byteLength, sha256, auth.userId,
+            ],
+          );
+          await tx.query('update ocs.documents set current_version_id = $2 where id = $1',
+            [doc!.id, version!.id]);
+
+          const photo = await tx.one<{ id: string }>(
+            `insert into ocs.supervision_visit_photos
+               (company_id, visit_id, document_id, photo_type, caption, sequence,
+                taken_at, latitude, longitude, uploaded_by)
+             values ($1,$2,$3,$4::ocs.visit_photo_type,$5,
+                     (select coalesce(max(sequence), 0) + 1
+                        from ocs.supervision_visit_photos where visit_id = $2),
+                     $6::timestamptz,$7,$8,$9)
+             returning id`,
+            [
+              visit.company_id, id, doc!.id, body.photoType, body.caption ?? null,
+              body.takenAt ?? null, body.lat ?? null, body.lng ?? null, auth.userId,
+            ],
+          );
+
+          await writeAudit(tx, {
+            companyId: visit.company_id,
+            actorUserId: auth.userId,
+            actorEmail: auth.email,
+            action: 'supervision.photo_added',
+            entityType: 'supervision_visit',
+            entityId: id,
+            summary: `Photograph added: ${body.photoType}`,
+            after: {
+              photoId: photo!.id,
+              documentId: doc!.id,
+              takenAt: body.takenAt ?? null,
+              hasLocation: body.lat != null,
+              sha256,
+            },
+            requestId: req.id,
+            ipAddress: clientIp(req),
+            userAgent: userAgent(req),
+          });
+
+          const after = await tx.one<{ photo_count: number; required_photo_count: number }>(
+            `select photo_count, required_photo_count from ocs.supervision_visits where id = $1`,
+            [id],
+          );
+
+          return {
+            id: photo!.id,
+            documentId: doc!.id,
+            photoType: body.photoType,
+            takenAt: body.takenAt ?? null,
+            lat: body.lat ?? null,
+            lng: body.lng ?? null,
+            photoCount: after!.photo_count,
+            requiredPhotoCount: after!.required_photo_count,
+            /*
+             * Told plainly, because the supervisor is standing on the site
+             * right now and this is the only moment the missing photograph is
+             * cheap to take.
+             */
+            stillNeeded: Math.max(0, after!.required_photo_count - after!.photo_count),
+          };
+        },
+        { reason: 'supervision_photo' },
+      );
+
+      reply.code(201);
+      return result;
     },
   );
 }

@@ -24,6 +24,7 @@ const SECTIONS: NavSection[] = [
       { to: '/pipeline', label: 'Permit Pipeline', badgeKey: 'openPermits' },
       { to: '/inspections', label: 'Inspections', badgeKey: 'inspectionsThisWeek' },
       { to: '/documents', label: 'Documents & Compliance' },
+      { to: '/field', label: 'My site visits', staffOnly: true },
       { to: '/supervision', label: 'Supervision', staffOnly: true },
       { to: '/notary', label: 'Notary', staffOnly: true },
     ],

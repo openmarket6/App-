@@ -26,6 +26,7 @@ import Onboarding from './pages/Onboarding.tsx';
 import Compliance from './pages/Compliance.tsx';
 import Drafting from './pages/Drafting.tsx';
 import Supervision from './pages/Supervision.tsx';
+import FieldVisits from './pages/FieldVisits.tsx';
 import Invoices from './pages/Invoices.tsx';
 import Support from './pages/Support.tsx';
 import Notary from './pages/Notary.tsx';
@@ -61,11 +62,21 @@ export default function App() {
 
   const staffOnly = (el: JSX.Element) => (isStaff ? el : <Navigate to="/dashboard" replace />);
 
+  /*
+   * A site supervisor lands on the field screen, not the dashboard.
+   *
+   * Their account exists to do one thing on a phone, and the operations
+   * dashboard is a page of numbers they cannot act on while standing on a roof.
+   * Sending them there first would make every visit start with a wrong turn.
+   */
+  const home = user.role === 'SITE_SUPERVISOR' ? '/field' : '/dashboard';
+
   return (
     <Shell>
       <Routes>
-        <Route path="/" element={<Navigate to="/dashboard" replace />} />
+        <Route path="/" element={<Navigate to={home} replace />} />
         <Route path="/dashboard" element={isStaff ? <Dashboard /> : <PortalHome />} />
+        <Route path="/field" element={<FieldVisits />} />
 
         <Route path="/pipeline" element={<Pipeline />} />
         <Route path="/permits/new" element={<PermitNew />} />
@@ -96,7 +107,7 @@ export default function App() {
         <Route path="/settings/google" element={staffOnly(<GoogleSettings />)} />
         <Route path="/settings/users" element={user.role === 'ADMIN' ? <Users /> : <Navigate to="/dashboard" replace />} />
 
-        <Route path="*" element={<Navigate to="/dashboard" replace />} />
+        <Route path="*" element={<Navigate to={home} replace />} />
       </Routes>
     </Shell>
   );
