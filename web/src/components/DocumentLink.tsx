@@ -1,14 +1,30 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { ApiError, getBlobUrl } from '../lib/api.ts';
+import { useEffect, useState, type ReactNode } from 'react';
+import { ApiError, get } from '../lib/api.ts';
 
 /**
  * Opens a stored document.
  *
- * Not an `<a href>`: the content route authenticates with a bearer token, and
- * a plain link sends none, so it would 401 for everybody. The bytes are pulled
- * through the API client and handed to the browser as an object URL, which
- * also means a shared cache never sees one contractor's file.
+ * It asks the API where the file is, not for the file. `GET /documents/:id/download`
+ * performs the authorization check and the audit entry, then returns a short-lived
+ * signed URL straight to object storage — so a 200 MB plan set never travels
+ * through Node, which is rule 3 of `services/storage.ts` and also the reason a
+ * job-site upload does not time out.
+ *
+ * The earlier version fetched `/documents/:id/content`. That route does not
+ * exist and never did: verified against production on 22 Aug 2026, it returns
+ * `404 No route for GET /api/documents/:id/content`, which means every document
+ * link and every photo thumbnail in the product was broken. It was recorded in
+ * `tests/route-coverage.test.ts` as a known gap with the note that the fix
+ * belonged here rather than in a new endpoint. This is that fix.
  */
+interface DownloadTarget {
+  url: string;
+  fileName: string;
+  expiresInSeconds: number;
+}
+
+const downloadPath = (documentId: string) => `/documents/${documentId}/download`;
+
 export default function DocumentLink({
   documentId,
   children,
@@ -20,22 +36,16 @@ export default function DocumentLink({
 }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const urls = useRef<string[]>([]);
-
-  useEffect(
-    () => () => {
-      for (const u of urls.current) URL.revokeObjectURL(u);
-    },
-    [],
-  );
 
   async function open() {
     setError(null);
     setLoading(true);
     try {
-      const url = await getBlobUrl(`/documents/${documentId}/content`);
-      urls.current.push(url);
-      window.open(url, '_blank', 'noopener');
+      // Fetched at click time, never cached: the signed URL is deliberately
+      // short-lived, and a stale one fails in a way that reads as "the file is
+      // gone" rather than "the link expired".
+      const target = await get<DownloadTarget>(downloadPath(documentId));
+      window.open(target.url, '_blank', 'noopener,noreferrer');
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'Could not open that file');
     } finally {
@@ -54,8 +64,12 @@ export default function DocumentLink({
 }
 
 /**
- * Thumbnail for an uploaded image. Same reasoning as above — the src has to be
- * an object URL, because an authenticated GET is the only way to these bytes.
+ * Thumbnail for an uploaded image.
+ *
+ * Same route, and the signed URL goes straight into `src` — the browser
+ * fetches the bytes from storage itself. No bearer token is involved, so
+ * nothing lands in browser history or a referrer header, and the API is not
+ * asked to proxy an image.
  */
 export function DocumentImage({
   documentId,
@@ -71,13 +85,12 @@ export function DocumentImage({
 
   useEffect(() => {
     let cancelled = false;
-    let created: string | null = null;
+    setSrc(null);
+    setFailed(false);
 
-    getBlobUrl(`/documents/${documentId}/content`)
-      .then((url) => {
-        created = url;
-        if (cancelled) URL.revokeObjectURL(url);
-        else setSrc(url);
+    get<DownloadTarget>(downloadPath(documentId))
+      .then((target) => {
+        if (!cancelled) setSrc(target.url);
       })
       .catch(() => {
         if (!cancelled) setFailed(true);
@@ -85,7 +98,6 @@ export function DocumentImage({
 
     return () => {
       cancelled = true;
-      if (created) URL.revokeObjectURL(created);
     };
   }, [documentId]);
 
@@ -101,5 +113,13 @@ export function DocumentImage({
     return <div className={`bg-page animate-pulse ${className}`} aria-hidden />;
   }
 
-  return <img src={src} alt={alt} className={className} loading="lazy" />;
+  return (
+    <img
+      src={src}
+      alt={alt}
+      className={className}
+      loading="lazy"
+      onError={() => setFailed(true)}
+    />
+  );
 }

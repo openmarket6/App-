@@ -1,0 +1,103 @@
+# Continuous integration.
+#
+# Before this file, the repository had 36 test files and nothing that ran them.
+# `tests/migration-hygiene.test.ts` opens with a comment about failing "in CI
+# instead of in production"; there was no CI, so it failed in neither. The
+# tenant-isolation tests -- the ones that prove one contractor cannot read
+# another's permits -- skip silently unless three TEST_*_DATABASE_URL variables
+# are set, which no environment set.
+#
+# So this workflow does two things that matter more than its length suggests:
+# it runs the tests against a real Postgres, and it FAILS if they skip.
+name: ci
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  schedule:
+    # Catches drift that nobody pushed: an expired certificate, a dependency
+    # advisory, a production deploy that fell behind the branch.
+    - cron: '17 6 * * *'
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ocs_test
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+        ports: ['5432:5432']
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/ocs_test
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/ocs_test
+      TEST_APP_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/ocs_test
+      TEST_SERVICE_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/ocs_test
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # The backend typechecks as part of its build. The frontend has no
+      # tsconfig.json and `vite build` strips types without checking them, so a
+      # type error in web/src ships today. Typecheck it explicitly.
+      - name: typecheck backend
+        run: npx tsc -p tsconfig.json --noEmit
+
+      - name: install web deps
+        working-directory: web
+        run: npm ci
+
+      - name: build web
+        working-directory: web
+        run: npm run build
+
+      - name: migrate test database
+        run: npm run migrate
+
+      - name: test
+        run: npx vitest run --reporter=verbose
+
+      # A suite that skips is not a suite that passed. This is the guard that
+      # stops tenant-isolation quietly opting out again.
+      - name: fail on skipped tests
+        run: |
+          npx vitest run --reporter=json --outputFile=/tmp/vitest.json || true
+          SKIPPED=$(node -e "const r=require('/tmp/vitest.json');console.log(r.numPendingTests+r.numTodoTests)")
+          echo "skipped: $SKIPPED"
+          if [ "$SKIPPED" -gt 0 ]; then
+            echo "::error::$SKIPPED test(s) skipped. A skipped isolation test is an unproven claim."
+            exit 1
+          fi
+
+  watchdog:
+    # Runs against production on a schedule and on pushes to the deployed
+    # branch. Deliberately a separate job: a red watchdog means production is
+    # unwell, which is different information from a red test suite.
+    if: github.event_name == 'schedule' || github.ref_name == 'claude/ocs-migration-audit-phase-0-03a8qm'
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ github.event_name != 'schedule' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: watchdog
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_BRANCH: claude/ocs-migration-audit-phase-0-03a8qm
+        run: node ops/watchdog.mjs
