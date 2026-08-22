@@ -170,17 +170,64 @@ export function renderEmail(params: {
   title: string;
   body: string;
   linkPath: string | null;
+  /** Button label. Defaults to the generic notification wording. */
+  cta?: string;
 }): { html: string; text: string } {
   const link = params.linkPath ? `${env.APP_BASE_URL.replace(/\/$/, '')}${params.linkPath}` : null;
 
   const html = `<!doctype html><html><body style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;line-height:1.5;color:#1a1a1a">
 <h2 style="margin:0 0 12px">${escapeHtml(params.title)}</h2>
 <p style="margin:0 0 16px">${escapeHtml(params.body).replace(/\n/g, '<br>')}</p>
-${link ? `<p><a href="${escapeHtml(link)}" style="display:inline-block;padding:10px 16px;background:#1f4fd8;color:#fff;text-decoration:none;border-radius:6px">View in portal</a></p>` : ''}
+${link ? `<p><a href="${escapeHtml(link)}" style="display:inline-block;padding:10px 16px;background:#1f4fd8;color:#fff;text-decoration:none;border-radius:6px">${escapeHtml(params.cta ?? 'View in portal')}</a></p>` : ''}
 <hr style="border:none;border-top:1px solid #e5e5e5;margin:24px 0">
 <p style="font-size:12px;color:#666;margin:0">One Contractor Solutions</p>
 </body></html>`;
 
   const text = [params.title, '', params.body, ...(link ? ['', link] : [])].join('\n');
   return { html, text };
+}
+
+
+/**
+ * Send someone their invitation link.
+ *
+ * Sent by the API at request time rather than queued for the worker: an
+ * invitation is the one email whose absence stops a person using the product
+ * at all, and routing it through a background queue makes "did it go?" depend
+ * on a second service being healthy. It is awaited so the caller can tell the
+ * administrator whether it actually went out -- when it did not, the link is
+ * still returned for them to pass on by hand, which is the only reason anybody
+ * got in before this existed.
+ */
+export async function sendInviteEmail(params: {
+  to: string;
+  name: string | null;
+  acceptPath: string;
+}): Promise<EmailResult> {
+  if (!emailConfigured()) {
+    return { ok: false, error: 'No email provider configured (set RESEND_API_KEY and EMAIL_FROM)' };
+  }
+
+  const greeting = params.name?.trim() ? `${params.name.trim()}, you` : 'You';
+  const { html, text } = renderEmail({
+    title: 'Your One Contractor Solutions account',
+    body:
+      `${greeting} have been invited to One Contractor Solutions. ` +
+      'Choose a password to finish setting up your account.\n\n' +
+      'This link can only be used once, and it expires in seven days.',
+    linkPath: params.acceptPath,
+    cta: 'Choose your password',
+  });
+
+  const result = await sendEmail({
+    to: params.to,
+    subject: 'Set up your One Contractor Solutions account',
+    html,
+    text,
+  });
+
+  if (!result.ok) {
+    logger.warn({ to: params.to, error: result.error }, 'invitation email not delivered');
+  }
+  return result;
 }
