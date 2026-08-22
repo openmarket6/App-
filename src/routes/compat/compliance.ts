@@ -26,7 +26,12 @@ import {
 } from '../../shared/compliance.js';
 
 /** The stored decision maps onto the frontend's status vocabulary. */
-const DECISION_TO_STATUS: Record<string, ComplianceStatus> = {
+/**
+ * Exported so the filing check reads decisions the same way this module does.
+ * A second copy of this map is a second answer to "is this certificate good",
+ * and the two would diverge the first time a decision value is added.
+ */
+export const DECISION_TO_STATUS: Record<string, ComplianceStatus> = {
   pending_review: 'PENDING_REVIEW',
   rejected: 'REJECTED',
   waived: 'WAIVED',
@@ -242,8 +247,15 @@ export async function compatComplianceRoutes(app: FastifyInstance): Promise<void
     },
   );
 
-  /** Record or replace a certificate. */
-  app.put(
+  /**
+   * Record or replace a certificate.
+   *
+   * POST rather than PUT even though it upserts by (company, kind): the caller
+   * is uploading a new certificate, and which existing row that displaces is
+   * this module's business, not theirs. It was PUT, which nothing called --
+   * the screen has always sent POST, so the upload has never reached here.
+   */
+  app.post(
     '/api/compliance',
     { preHandler: [requireApiAuth, requireCapability('compliance:read')] },
     async (req, reply) => {

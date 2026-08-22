@@ -23,13 +23,15 @@ import { requireApiAuth, requireCapability } from './auth.js';
 import { scoped } from './api.js';
 import { parse, clientIp } from '../../lib/http-helpers.js';
 import { writeAudit } from '../../lib/audit.js';
-import { badRequest, notFound } from '../../lib/errors.js';
+import { AppError, badRequest, notFound } from '../../lib/errors.js';
 import {
   PERMIT_STAGES, toStage, fromStage, toTrade, assessRisk, daysInStage,
   toPlatformLabel, toIntegrationTier, toInspectionResult,
 } from './mapping.js';
 import { toDetectedStatus } from '../../services/municipalities/accela/mapping.js';
 import { buildRequirements } from '../../shared/requirements.js';
+import { assessCompliance, type ComplianceItem } from '../../shared/compliance.js';
+import { DECISION_TO_STATUS } from './compliance.js';
 import type { RequirementItem } from '../../shared/types.js';
 import type { PermitType } from '../../shared/enums.js';
 
@@ -418,11 +420,16 @@ export async function compatDetailRoutes(app: FastifyInstance): Promise<void> {
    * returns snake_case; the two disagree, and this is the shape the screen
    * actually consumes.
    *
-   * Several fields the Client type declares have no column yet — service line,
-   * onboarding status, filing hold. They are returned as explicit nulls and
-   * defaults rather than omitted, so the page renders instead of throwing on a
-   * missing key, and so it is obvious from the response which facts this
-   * system does not yet record.
+   * Service line and filing hold are read from the columns 0033 added. Before
+   * that they were invented here at read time, so every contractor looked like
+   * EXPEDITING no matter what they had been sold — and on MANAGED_LICENSE that
+   * is the difference between supervision being a service and being a legal
+   * obligation.
+   *
+   * The remainder — contact name, onboarding status, QuickBooks id — still have
+   * no column. They are returned as explicit nulls rather than omitted, so the
+   * page renders instead of throwing on a missing key, and so it is obvious
+   * from the response which facts this system does not yet record.
    */
   app.get(
     '/api/clients/:id',
@@ -439,6 +446,9 @@ export async function compatDetailRoutes(app: FastifyInstance): Promise<void> {
                     c.status::text as status, c.email, c.phone,
                     c.address_line1 as "addressLine1", c.city, c.state,
                     c.postal_code as zip,
+                    c.service_line::text as "serviceLine",
+                    c.filing_hold as "filingHold",
+                    c.filing_hold_reason as "filingHoldReason",
                     c.stripe_customer_id as "stripeCustomerId",
                     c.created_at as "createdAt", c.updated_at as "updatedAt",
                     (select count(*)::int from ocs.permits p
@@ -457,13 +467,10 @@ export async function compatDetailRoutes(app: FastifyInstance): Promise<void> {
             contactName: null,
             contactEmail: row['email'] ?? null,
             contactPhone: row['phone'] ?? null,
-            serviceLine: 'EXPEDITING',
             licenseType: null,
             licenseExpiresAt: null,
             onboardingStatus: row['status'] === 'active' ? 'ACTIVE' : 'IN_PROGRESS',
             onboardingCompletedAt: null,
-            filingHold: false,
-            filingHoldReason: null,
             quickbooksCustomerId: null,
             active: row['status'] === 'active',
           };
@@ -472,6 +479,404 @@ export async function compatDetailRoutes(app: FastifyInstance): Promise<void> {
         // passing the requested id narrows staff to the same one record.
         id,
       );
+    },
+  );
+
+  /**
+   * Create a contractor.
+   *
+   * The service line is stored, not assumed. It decides pricing, which
+   * paperwork is mandatory, and whether a permit filed for this contractor
+   * needs one of our qualifiers named on it — so a default here is a wrong
+   * answer for half of the customers, not a neutral one.
+   */
+  app.post(
+    '/api/clients',
+    { preHandler: [requireApiAuth, requireCapability('client:create')] },
+    async (req, reply) => {
+      const auth = req.apiAuth!;
+      const body = parse(
+        z.object({
+          name: z.string().min(1).max(200),
+          legalName: z.string().max(200).nullable().optional(),
+          contactName: z.string().max(200).nullable().optional(),
+          contactEmail: z.string().email().nullable().optional(),
+          contactPhone: z.string().max(40).nullable().optional(),
+          serviceLine: z.enum(['EXPEDITING', 'MANAGED_LICENSE']).default('EXPEDITING'),
+          licenseNumber: z.string().max(60).nullable().optional(),
+          licenseType: z.string().max(60).nullable().optional(),
+          onboardingStatus: z.string().max(40).optional(),
+        }),
+        req.body,
+        'contractor',
+      );
+
+      const created = await scoped(req, async (tx) => {
+        const row = await tx.one<Record<string, unknown>>(
+          `insert into ocs.companies
+             (name, legal_name, license_number, service_line, email, phone, status)
+           values ($1, $2, $3, $4::ocs.service_line, $5, $6, 'active')
+           returning id, name, legal_name as "legalName",
+                     license_number as "licenseNumber",
+                     service_line::text as "serviceLine",
+                     filing_hold as "filingHold",
+                     filing_hold_reason as "filingHoldReason",
+                     status::text as status, email, phone,
+                     created_at as "createdAt", updated_at as "updatedAt"`,
+          [
+            body.name,
+            body.legalName ?? null,
+            body.licenseNumber ?? null,
+            body.serviceLine,
+            body.contactEmail ?? null,
+            body.contactPhone ?? null,
+          ],
+        );
+
+        await writeAudit(tx, {
+          actorUserId: auth.userId,
+          actorEmail: auth.email,
+          action: 'client.created',
+          entityType: 'company',
+          entityId: String(row!['id']),
+          summary: `Created ${body.name} on ${body.serviceLine}`,
+          after: { ...body },
+          requestId: req.id,
+          ipAddress: clientIp(req),
+        });
+
+        return row!;
+      });
+
+      reply.code(201);
+      // Bare, matching the read: the page does `post<Client>('/clients', …)`.
+      return {
+        ...created,
+        contactName: body.contactName ?? null,
+        contactEmail: created['email'] ?? null,
+        contactPhone: created['phone'] ?? null,
+        licenseType: body.licenseType ?? null,
+        licenseExpiresAt: null,
+        federalEin: null,
+        onboardingStatus: body.onboardingStatus ?? 'INVITED',
+        onboardingCompletedAt: null,
+        quickbooksCustomerId: null,
+        stripeCustomerId: null,
+        active: true,
+        permitCount: 0,
+        userCount: 0,
+      };
+    },
+  );
+
+  /**
+   * Change a contractor — in practice, put them on or take them off filing hold.
+   *
+   * A hold needs a reason and the database enforces it, because a hold nobody
+   * can explain is a hold nobody can clear.
+   */
+  app.patch(
+    '/api/clients/:id',
+    { preHandler: [requireApiAuth, requireCapability('client:suspend')] },
+    async (req) => {
+      const auth = req.apiAuth!;
+      const { id } = parse(idParam, req.params, 'parameters');
+      const body = parse(
+        z.object({
+          name: z.string().min(1).max(200).optional(),
+          legalName: z.string().max(200).nullable().optional(),
+          licenseNumber: z.string().max(60).nullable().optional(),
+          serviceLine: z.enum(['EXPEDITING', 'MANAGED_LICENSE']).optional(),
+          filingHold: z.boolean().optional(),
+          filingHoldReason: z.string().max(2000).nullable().optional(),
+          email: z.string().email().nullable().optional(),
+          phone: z.string().max(40).nullable().optional(),
+        }),
+        req.body,
+        'contractor',
+      );
+
+      if (Object.keys(body).length === 0) throw badRequest('Nothing to change.');
+      if (body.filingHold === true && !body.filingHoldReason?.trim()) {
+        throw badRequest(
+          'A filing hold needs a reason. Record what is outstanding, or the ' +
+            'next person has no way to know when it can be lifted.',
+        );
+      }
+
+      return scoped(req, async (tx, companyId) => {
+        const before = await tx.one<Record<string, unknown>>(
+          `select id, name, service_line::text as service_line, filing_hold
+             from ocs.companies
+            where id = $1 and deleted_at is null
+              and ($2::uuid is null or id = $2::uuid)`,
+          [id, companyId],
+        );
+        if (!before) throw notFound('Contractor');
+
+        const columns: Array<[string, unknown]> = [
+          ['name', body.name],
+          ['legal_name', body.legalName],
+          ['license_number', body.licenseNumber],
+          ['email', body.email],
+          ['phone', body.phone],
+          ['filing_hold', body.filingHold],
+          // Clearing the hold clears its reason, so a stale explanation cannot
+          // outlive the thing it explained.
+          ['filing_hold_reason', body.filingHold === false ? null : body.filingHoldReason],
+        ];
+
+        const sets: string[] = [];
+        const values: unknown[] = [id];
+        for (const [column, value] of columns) {
+          if (value === undefined) continue;
+          values.push(value);
+          sets.push(`${column} = $${values.length}`);
+        }
+        if (body.serviceLine !== undefined) {
+          values.push(body.serviceLine);
+          sets.push(`service_line = $${values.length}::ocs.service_line`);
+        }
+
+        const client = await tx.one<Record<string, unknown>>(
+          `update ocs.companies set ${sets.join(', ')}
+            where id = $1
+            returning id, name, legal_name as "legalName",
+                      license_number as "licenseNumber",
+                      service_line::text as "serviceLine",
+                      filing_hold as "filingHold",
+                      filing_hold_reason as "filingHoldReason",
+                      status::text as status, email, phone,
+                      updated_at as "updatedAt"`,
+          values,
+        );
+
+        await writeAudit(tx, {
+          actorUserId: auth.userId,
+          actorEmail: auth.email,
+          action: body.filingHold === true ? 'client.filing_hold_set'
+            : body.filingHold === false ? 'client.filing_hold_cleared'
+              : 'client.updated',
+          entityType: 'company',
+          entityId: id,
+          summary: `Updated ${String(before['name'])}`,
+          before,
+          after: body,
+          requestId: req.id,
+          ipAddress: clientIp(req),
+        });
+
+        return client;
+      });
+    },
+  );
+
+  // ---------------------------------------------------------------------------
+  // Filing a permit
+  // ---------------------------------------------------------------------------
+
+  /**
+   * File a permit.
+   *
+   * Two refusals here are the point of the route, and both answer with the
+   * exact thing to go and fix rather than a bare "no":
+   *
+   *   not_cleared_to_file      the contractor's own paperwork does not stand up
+   *   supervision_not_defensible   the managed licence has nobody behind it
+   *
+   * The screen reads `details` and lists the gaps, so a coordinator can act on
+   * the refusal instead of guessing at it. That is why they are structured
+   * codes and not messages.
+   */
+  app.post(
+    '/api/permits',
+    { preHandler: [requireApiAuth, requireCapability('permit:create')] },
+    async (req, reply) => {
+      const auth = req.apiAuth!;
+      const body = parse(
+        z.object({
+          projectId: z.string().uuid(),
+          permitType: z.string().min(1).max(60),
+          serviceLine: z.enum(['EXPEDITING', 'MANAGED_LICENSE']).optional(),
+          agencyRecordId: z.string().max(120).nullable().optional(),
+          qualifyingAgentId: z.string().uuid().nullable().optional(),
+          supervisorUserId: z.string().uuid().nullable().optional(),
+          scopeOfWork: z.string().max(4000).nullable().optional(),
+        }),
+        req.body,
+        'permit',
+      );
+
+      const permit = await scoped(req, async (tx, companyId) => {
+        const project = await tx.one<{
+          id: string; company_id: string; municipality_id: string | null;
+        }>(
+          `select id, company_id, municipality_id from ocs.projects
+            where id = $1 and deleted_at is null
+              and ($2::uuid is null or company_id = $2::uuid)`,
+          [body.projectId, companyId],
+        );
+        if (!project) throw notFound('Project');
+
+        const client = await tx.one<{
+          id: string; name: string; service_line: string;
+          filing_hold: boolean; filing_hold_reason: string | null;
+        }>(
+          `select id, name, service_line::text as service_line,
+                  filing_hold, filing_hold_reason
+             from ocs.companies where id = $1 and deleted_at is null`,
+          [project.company_id],
+        );
+        if (!client) throw notFound('Contractor');
+
+        // A hold is a decision already taken. It outranks the paperwork check
+        // below, and says who to talk to rather than what to upload.
+        if (client.filing_hold) {
+          throw new AppError(409, 'filing_hold',
+            `${client.name} is on filing hold: ${client.filing_hold_reason}`,
+            { details: { reason: client.filing_hold_reason } });
+        }
+
+        const items = await tx.many<ComplianceItem & { decision: string }>(
+          `select c.id, c.company_id as "clientId", c.kind::text as kind,
+                  c.carrier, c.policy_number as "policyNumber",
+                  c.limit_per_occurrence_cents as "limitPerOccurrenceCents",
+                  c.limit_aggregate_cents as "limitAggregateCents",
+                  c.effective_date as "effectiveDate",
+                  c.expires_at as "expiresAt",
+                  c.document_id as "documentId",
+                  c.decision::text as decision
+             from ocs.compliance_items c
+            where c.company_id = $1`,
+          [client.id],
+        );
+
+        // The stored decision is not the status: an accepted certificate that
+        // has since expired is not valid, and assessCompliance works that out
+        // from the expiry date. This only translates the decision.
+        const verdict = assessCompliance(
+          items.map((i) => ({
+            ...i,
+            status: DECISION_TO_STATUS[i.decision] ?? 'PENDING_REVIEW',
+          })) as never,
+        );
+
+        if (!verdict.clearedToFile) {
+          const blockingGaps = verdict.gaps.filter((g) => g.blocksFiling);
+          throw new AppError(409, 'not_cleared_to_file',
+            `${client.name} is not cleared to file: ` +
+              blockingGaps.map((g) => g.label).join(', '),
+            { details: { blockingGaps } });
+        }
+
+        const line = body.serviceLine ?? client.service_line;
+
+        /*
+         * On the managed line our licence goes on the permit and we become the
+         * contractor of record. Filing one with nobody named is not an
+         * administrative omission -- it is a filing we could not defend.
+         */
+        if (line === 'MANAGED_LICENSE') {
+          const gaps: Array<{ kind: string; detail: string }> = [];
+          if (!body.qualifyingAgentId) {
+            gaps.push({
+              kind: 'NO_QUALIFIER',
+              detail: 'No qualifying agent named. Our licence cannot go on a permit without saying whose it is.',
+            });
+          } else {
+            const licence = await tx.one<{
+              qualifier_name: string; expires_on: string | null; status: string;
+              max_active: number; active_count: number;
+            }>(
+              `select l.qualifier_name, l.expires_on, l.status::text as status,
+                      l.max_active_engagements as max_active,
+                      (select count(*)::int from ocs.supervision_engagements e
+                        where e.service_license_id = l.id and e.status = 'active') as active_count
+                 from ocs.service_licenses l
+                where l.id = $1 and l.deleted_at is null`,
+              [body.qualifyingAgentId],
+            );
+            if (!licence) throw notFound('Qualifying agent');
+            if (licence.status !== 'active') {
+              gaps.push({ kind: 'LICENCE_INACTIVE', detail: `${licence.qualifier_name}'s licence is not active.` });
+            }
+            // pg hands back a `date` as a JS Date, whose default string form
+            // is "Thu Jul 23 2026 00:00:00 GMT+0000 (Coordinated Universal
+            // Time)" — a timestamp with a timezone, for a value that has
+            // neither. The date alone is what expired.
+            const expiresOn = licence.expires_on
+              ? new Date(licence.expires_on).toISOString().slice(0, 10)
+              : null;
+            if (expiresOn && Date.parse(expiresOn) < Date.now()) {
+              gaps.push({
+                kind: 'LICENCE_EXPIRED',
+                detail: `${licence.qualifier_name}'s licence expired on ${expiresOn}.`,
+              });
+            }
+            if (licence.active_count >= licence.max_active) {
+              gaps.push({
+                kind: 'AT_CAPACITY',
+                detail:
+                  `${licence.qualifier_name} is already on ${licence.active_count} active engagements, ` +
+                  `at the cap of ${licence.max_active}. Florida expects real supervisory control.`,
+              });
+            }
+          }
+          if (!body.supervisorUserId) {
+            gaps.push({
+              kind: 'NO_SUPERVISOR',
+              detail: 'No supervisor assigned. Somebody has to be walking the job.',
+            });
+          }
+
+          if (gaps.length > 0) {
+            throw new AppError(409, 'supervision_not_defensible',
+              'This permit cannot be filed under our licence yet.',
+              { details: { gaps } });
+          }
+        }
+
+        const row = await tx.one<Record<string, unknown>>(
+          `insert into ocs.permits
+             (company_id, project_id, municipality_id, permit_number, permit_type,
+              status, scope_of_work, created_by)
+           values ($1, $2, $3, $4, $5, 'draft', $6, $7)
+           returning ${PERMIT_SELECT.replace(/p\./g, '')}`,
+          [
+            client.id,
+            project.id,
+            project.municipality_id,
+            body.agencyRecordId ?? null,
+            body.permitType,
+            body.scopeOfWork ?? null,
+            auth.userId,
+          ],
+        );
+
+        await writeAudit(tx, {
+          actorUserId: auth.userId,
+          actorEmail: auth.email,
+          action: 'permit.created',
+          entityType: 'permit',
+          entityId: String(row!['id']),
+          summary: `Filed ${body.permitType} for ${client.name}`,
+          after: { ...body, serviceLine: line },
+          requestId: req.id,
+          ipAddress: clientIp(req),
+        });
+
+        return {
+          ...row!,
+          stage: toStage(row!['status'] as string),
+          trade: toTrade(body.permitType),
+          serviceLine: line,
+          correctionCycles: 0,
+          daysInStage: 0,
+        };
+      });
+
+      reply.code(201);
+      return { permit };
     },
   );
 
