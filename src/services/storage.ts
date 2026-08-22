@@ -108,6 +108,52 @@ export async function createSignedUploadUrl(key: string): Promise<SignedUpload> 
  * Default 300s: long enough to click through and download, short enough that a
  * link pasted into a chat or logged by a proxy is dead before it is useful.
  */
+/**
+ * Upload bytes we already hold, rather than handing the browser a signed URL.
+ *
+ * Both paths exist because they answer different problems. A signed URL keeps
+ * large files off this server entirely and is the right default. But the
+ * contractor portal and the supervisor's phone send the file to us as base64 in
+ * the request body -- one round trip instead of three, which matters on a job
+ * site with one bar of signal -- and those bytes have to reach storage from
+ * here.
+ *
+ * Not retried. A repeated PUT to the same key is harmless in itself, but a
+ * partial upload retried against a slow connection competes with the request
+ * still in flight, and the loser wins.
+ */
+export async function uploadObject(
+  key: string,
+  body: Buffer,
+  contentType: string,
+): Promise<{ bucket: string; key: string; sizeBytes: number }> {
+  assertAllowedContentType(contentType);
+
+  const res = await requestWithRetry(
+    `${base()}/object/${BUCKET}/${encodeURI(key)}`,
+    {
+      method: 'POST',
+      headers: {
+        ...headers(),
+        'content-type': contentType,
+        // Replace on re-upload of the same key rather than erroring: a retried
+        // upload of the same version should converge, not fail.
+        'x-upsert': 'true',
+      },
+      body: new Uint8Array(body),
+    },
+    { attempts: 1, timeoutMs: 60_000, label: 'storage.upload' },
+  );
+
+  if (!res.ok) {
+    throw serviceUnavailable(
+      `Storage rejected the upload (HTTP ${res.status})`,
+    );
+  }
+
+  return { bucket: BUCKET, key, sizeBytes: body.byteLength };
+}
+
 export async function createSignedDownloadUrl(
   key: string,
   opts: { expiresInSeconds?: number; downloadAs?: string } = {},
