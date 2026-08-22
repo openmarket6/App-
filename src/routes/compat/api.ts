@@ -480,7 +480,7 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
 
         const rows = await tx.many<UserRow>(
           `select id, email, name, app_role, client_id, is_active, password_hash,
-                  token_version, created_at, last_login_at
+                  token_version, created_at, last_login_at, invite_token
              from ocs.app_users
             where deleted_at is null
               and ($1::uuid is null or client_id = $1::uuid)
@@ -488,7 +488,17 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
             limit 500`,
           [restrictTo],
         );
-        return { users: rows.map(publicUser), total: rows.length };
+        /*
+         * invitePending is what decides whether the UI offers to reissue an
+         * invitation, so it has to come from the list -- publicUser deliberately
+         * does not carry it, because the token is a credential and most callers
+         * have no business knowing one is outstanding. Only its existence
+         * crosses the wire here, never the token itself.
+         */
+        return {
+          users: rows.map((r) => ({ ...publicUser(r), invitePending: r.invite_token != null })),
+          total: rows.length,
+        };
       },
       { reason: 'list_users' },
     );
