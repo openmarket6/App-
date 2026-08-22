@@ -157,10 +157,27 @@ export async function healthRoutes(app: FastifyInstance): Promise<void> {
         ),
       ]);
 
-      const alive = worker?.alive === true;
+      // Heartbeat freshness alone is not health. On 22 Aug 2026 the worker was
+      // checking in every fifteen seconds, this endpoint said `ok`, and no job
+      // had actually run for two and a half hours because the reaper was
+      // itself wedged. A liveness probe that cannot see that is decorative.
+      const stuck = await withServiceContext(
+        async (tx) =>
+          tx.one<{ n: string }>(
+            `select count(*)::text as n
+               from ocs.jobs
+              where status = 'running'
+                and locked_at < now() - make_interval(secs => timeout_seconds)`,
+          ),
+        { reason: 'queue_health_stuck' },
+      );
+      const stuckCount = Number(stuck?.n ?? 0);
+
+      const alive = worker?.alive === true && stuckCount === 0;
 
       const body = {
         status: alive ? 'ok' : 'degraded',
+        stuckJobs: stuckCount,
         jobs,
         worker: worker?.last_seen_at
           ? {
@@ -174,7 +191,11 @@ export async function healthRoutes(app: FastifyInstance): Promise<void> {
           : null,
         note: alive
           ? undefined
-          : worker?.last_seen_at
+          : stuckCount > 0 && worker?.alive === true
+            ? `${stuckCount} job(s) hold an expired lock. The worker is alive but ` +
+              'work is not draining -- if one of them is system.reap_stuck_jobs, ' +
+              'nothing will clear it without intervention.'
+            : worker?.last_seen_at
             ? 'A worker has run but has not checked in recently. Scheduled municipal ' +
               'checks, licence reminders and notifications are not being processed.'
             : 'No worker has ever checked in. Nothing is processing background work — ' +
@@ -185,6 +206,67 @@ export async function healthRoutes(app: FastifyInstance): Promise<void> {
       return body;
     } catch (err) {
       logger.error({ err }, 'queue stats failed');
+      reply.code(503);
+      return { status: 'unavailable' };
+    }
+  });
+
+  /**
+   * Everything that is quietly wrong, in one request.
+   *
+   * `/healthz` answers "is the process up", `/readyz` answers "can it serve",
+   * and neither notices a system that is running perfectly while doing nothing
+   * useful -- permits nobody has checked, uploads that never completed, an
+   * invoice whose payments do not add up. Those are the failures that cost a
+   * client a deadline, and they are invisible to a status code.
+   *
+   * Every check lives in `ocs.ops_alerts()`, so this endpoint, the
+   * `system.integrity_sweep` job and the external watchdog cannot disagree.
+   *
+   * 503 when anything critical is open, so an uptime monitor can watch it
+   * directly. Point the monitor at the RENDER origin, not the Netlify domain:
+   * Netlify's SPA fallback answers unproxied paths with HTML and 200, which
+   * means a monitor aimed at the app domain reports green during an outage.
+   */
+  app.get('/healthz/deep', async (_req, reply) => {
+    try {
+      const [alerts, schedules] = await Promise.all([
+        withServiceContext(
+          async (tx) =>
+            tx.many<{ severity: string; code: string; detail: Record<string, unknown> }>(
+              `select severity, code, detail from ocs.ops_alerts()`,
+            ),
+          { reason: 'health_deep_alerts' },
+        ),
+        withServiceContext(
+          async (tx) =>
+            tx.many<{
+              name: string; last_status: string | null; consecutive_failures: number;
+              last_run_at: string | null; next_run_at: string; overdue: boolean;
+            }>(
+              `select name, last_status, consecutive_failures, last_run_at, next_run_at,
+                      next_run_at < now() - make_interval(secs => interval_seconds) as overdue
+                 from ocs.job_schedules
+                where is_enabled
+                order by name`,
+            ),
+          { reason: 'health_deep_schedules' },
+        ),
+      ]);
+
+      const critical = alerts.filter((a) => a.severity === 'critical');
+      const body = {
+        status: critical.length > 0 ? 'critical' : alerts.length > 0 ? 'warn' : 'ok',
+        commit,
+        checkedAt: new Date().toISOString(),
+        alerts,
+        schedules,
+      };
+
+      if (critical.length > 0) reply.code(503);
+      return body;
+    } catch (err) {
+      logger.error({ err }, 'deep health check failed');
       reply.code(503);
       return { status: 'unavailable' };
     }

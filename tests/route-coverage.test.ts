@@ -42,13 +42,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
  * acceptable *for now*. Every entry is a known-broken screen or a decision
  * waiting to be made — not a thing that is fine.
  */
-const KNOWN_GAPS: Record<string, string> = {
-  'GET /api/documents/:id/content':
-    'The UI wants raw bytes. Storage is deliberately private with per-request ' +
-    'signed URLs, and rule 3 of services/storage.ts is that bytes never stream ' +
-    'through this API. DocumentLink should fetch /documents/:id/download and ' +
-    'use the URL it returns.',
-};
+const KNOWN_GAPS: Record<string, string> = {};
 
 /*
  * A call site's path can span lines — a template literal with an expression
