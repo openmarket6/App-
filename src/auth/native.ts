@@ -84,6 +84,7 @@ export interface UserRow {
   created_at: string | Date;
   last_login_at: string | Date | null;
   mfa_enabled?: boolean;
+  invite_token?: string | null;
 }
 
 const iso = (v: string | Date | null): string | null =>
