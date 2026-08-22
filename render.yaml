@@ -92,6 +92,41 @@ services:
       - key: EMAIL_FROM
         sync: false
 
+      # --- Physical mail (Lob) ----------------------------------------------
+      #
+      # On the API only. The worker sends no mail: posting is triggered from a
+      # request, by a person who has just produced the document, and giving the
+      # worker a mail key it never uses would only widen what a compromised
+      # worker could do.
+      #
+      # BOTH of the first two are required. A key with no webhook secret can
+      # post certified mail and never hear that it arrived -- which is precisely
+      # the fact the certified mail was bought to establish -- so the API treats
+      # one-without-the-other as unconfigured and refuses to send.
+      #
+      # Test and live have DIFFERENT webhook secrets. Moving LOB_API_KEY to a
+      # live key without swapping LOB_WEBHOOK_SECRET in the same deploy leaves
+      # letters going out and every delivery event rejected as forged.
+      - key: LOB_API_KEY
+        sync: false
+      - key: LOB_WEBHOOK_SECRET
+        sync: false
+      # Where the signed green card and any return-to-sender come back to.
+      # Not optional for certified mail: without it a letter can be delivered
+      # perfectly and still prove nothing, so the send endpoint refuses.
+      - key: MAIL_RETURN_NAME
+        sync: false
+      - key: MAIL_RETURN_LINE1
+        sync: false
+      - key: MAIL_RETURN_LINE2
+        sync: false
+      - key: MAIL_RETURN_CITY
+        sync: false
+      - key: MAIL_RETURN_STATE
+        sync: false
+      - key: MAIL_RETURN_POSTAL_CODE
+        sync: false
+
       # --- Authentication ---------------------------------------------------
       # Email/password sign-in for the existing React frontend. Render generates
       # both and stores them encrypted, so no secret is ever committed.
