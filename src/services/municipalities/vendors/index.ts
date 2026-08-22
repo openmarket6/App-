@@ -16,6 +16,7 @@
 import type { MunicipalAdapter } from '../adapter.js';
 import { createConfigurableAdapter, type StatusCheckConfig } from './configurable.js';
 import { createPortalOnlyAdapter } from './portalOnly.js';
+import { createAccelaAdapter, accelaConfigFrom } from '../accela/adapter.js';
 import { logger } from '../../../lib/logger.js';
 
 export interface MunicipalityIntegration {
@@ -27,6 +28,9 @@ export interface MunicipalityIntegration {
   api_config: Record<string, unknown>;
   adapter_verified_at: string | null;
   supports_status_check: boolean;
+  /** Vendor-specific connection details. Set for API platforms, null otherwise. */
+  agency_code?: string | null;
+  api_environment?: string | null;
 }
 
 /** Vendors whose platform we recognise but which publish no usable API. */
@@ -54,6 +58,46 @@ export function resolveForMunicipality(
 
   if (PORTAL_ONLY_PLATFORMS.has(municipality.platform)) {
     return portalFallback();
+  }
+
+  /**
+   * Accela gets a purpose-built adapter WHEN it is fully configured for one.
+   *
+   * The dedicated adapter needs OAuth2 with a token cached across calls, it has
+   * to read an envelope that can report failure inside an HTTP 200, and its
+   * inspections live on a second endpoint -- none of which a URL-template
+   * adapter can express.
+   *
+   * But it is preferred, not forced. Some agencies publish a plain status URL
+   * needing no authentication at all, and an agency configured that way should
+   * keep working through the generic adapter below rather than being pushed to
+   * portal-only for lacking OAuth credentials it never needed.
+   */
+  if (municipality.platform === 'accela') {
+    const config = accelaConfigFrom(
+      {
+        api_base_url: municipality.api_base_url,
+        agency_code: municipality.agency_code ?? null,
+        api_environment: municipality.api_environment ?? null,
+        api_config: municipality.api_config,
+      },
+      credentials,
+    );
+
+    if (config) {
+      return createAccelaAdapter({
+        municipalityId: municipality.id,
+        municipalityName: municipality.name,
+        config,
+      });
+    }
+
+    logger.info(
+      { municipalityId: municipality.id },
+      'Accela jurisdiction has no API credentials; trying its generic status configuration',
+    );
+    // Falls through. If no generic config exists either, the check below sends
+    // it to portal-only, which is the correct floor.
   }
 
   const statusCheck = municipality.api_config?.['statusCheck'] as StatusCheckConfig | undefined;
