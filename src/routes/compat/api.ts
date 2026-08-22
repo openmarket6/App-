@@ -26,6 +26,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { withTenant, withServiceContext, type Tx } from '../../db/tenant.js';
 import { requireApiAuth, requireCapability } from './auth.js';
+import { CLIENT_COLUMNS, presentClient } from './client-shape.js';
 import { parse, clientIp, userAgent } from '../../lib/http-helpers.js';
 import { writeAudit } from '../../lib/audit.js';
 import { badRequest, forbidden, notFound, conflict, AppError } from '../../lib/errors.js';
@@ -93,7 +94,6 @@ const clientFilter = (companyId: string | null) => (companyId ? ` and company_id
  * reporting yesterday's architecture.
  */
 export const NOT_MIGRATED_AREAS = [
-  'signing',
   'connectors',
   /*
    * Google Drive is not "not yet" — it is not happening.
@@ -322,13 +322,12 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/api/clients', { preHandler: [requireApiAuth, requireCapability('client:read')] }, async (req) => {
     return scoped(req, async (tx, companyId) => {
-      const rows = await tx.many(
-        `select c.id, c.name, c.legal_name, c.status::text, c.license_number,
-                c.phone, c.email, c.city, c.state, c.created_at,
-                (select count(*) from ocs.permits p
-                  where p.company_id = c.id and p.deleted_at is null)::int as permit_count,
-                (select count(*) from ocs.app_users u
-                  where u.client_id = c.id and u.deleted_at is null)::int as user_count
+      const rows = await tx.many<Record<string, unknown>>(
+        `select ${CLIENT_COLUMNS},
+                (select count(*)::int from ocs.permits p
+                  where p.company_id = c.id and p.deleted_at is null) as "permitCount",
+                (select count(*)::int from ocs.app_users u
+                  where u.client_id = c.id and u.deleted_at is null) as "userCount"
            from ocs.companies c
           where c.deleted_at is null
             and ($1::uuid is null or c.id = $1::uuid)
@@ -336,7 +335,8 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
           limit 500`,
         [companyId],
       );
-      return { clients: rows, total: rows.length };
+      const clients = rows.map(presentClient);
+      return { clients, total: clients.length };
     }, req.apiAuth!.role === 'CLIENT' ? req.apiAuth!.clientId : (req.query as { clientId?: string })?.clientId ?? null);
   });
 
@@ -1266,10 +1266,6 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
    * exist. A 501 that lies about the remedy is worse than a bare 501.
    */
   const STUB_REASON: Record<string, string> = {
-    signing:
-      'Electronic signature is not built. It is waiting on a choice of provider ' +
-      '(DocuSign or PandaDoc). Documents can be generated and downloaded in the ' +
-      'meantime from Documents & Compliance.',
     connectors:
       'The connector roadmap screen is not built on this backend. The jurisdiction ' +
       'gate data it reads exists only inside the frontend bundle, and the ' +
@@ -1304,7 +1300,7 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/_migration-status', async () => ({
     migrated: [
       'auth', 'dashboard', 'clients', 'permits', 'jurisdictions',
-      'supervision/visits', 'users', 'corrections', 'inspections', 'admin', 'support', 'notary', 'billing', 'drafting', 'portal', 'projects', 'compliance', 'documents',
+      'supervision/visits', 'users', 'corrections', 'inspections', 'admin', 'support', 'notary', 'billing', 'drafting', 'portal', 'projects', 'compliance', 'documents', 'signing',
     ],
     notMigrated: NOT_MIGRATED,
     note:

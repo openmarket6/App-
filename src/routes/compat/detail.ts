@@ -20,6 +20,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { requireApiAuth, requireCapability } from './auth.js';
+import { CLIENT_COLUMNS, presentClient } from './client-shape.js';
 import { scoped } from './api.js';
 import { parse, clientIp } from '../../lib/http-helpers.js';
 import { writeAudit } from '../../lib/audit.js';
@@ -441,16 +442,7 @@ export async function compatDetailRoutes(app: FastifyInstance): Promise<void> {
         req,
         async (tx, companyId) => {
           const row = await tx.one<Record<string, unknown>>(
-            `select c.id, c.name, c.legal_name as "legalName",
-                    c.license_number as "licenseNumber", c.federal_ein as "federalEin",
-                    c.status::text as status, c.email, c.phone,
-                    c.address_line1 as "addressLine1", c.city, c.state,
-                    c.postal_code as zip,
-                    c.service_line::text as "serviceLine",
-                    c.filing_hold as "filingHold",
-                    c.filing_hold_reason as "filingHoldReason",
-                    c.stripe_customer_id as "stripeCustomerId",
-                    c.created_at as "createdAt", c.updated_at as "updatedAt",
+            `select ${CLIENT_COLUMNS},
                     (select count(*)::int from ocs.permits p
                       where p.company_id = c.id and p.deleted_at is null) as "permitCount",
                     (select count(*)::int from ocs.app_users u
@@ -462,18 +454,7 @@ export async function compatDetailRoutes(app: FastifyInstance): Promise<void> {
           );
           if (!row) throw notFound('Contractor');
 
-          return {
-            ...row,
-            contactName: null,
-            contactEmail: row['email'] ?? null,
-            contactPhone: row['phone'] ?? null,
-            licenseType: null,
-            licenseExpiresAt: null,
-            onboardingStatus: row['status'] === 'active' ? 'ACTIVE' : 'IN_PROGRESS',
-            onboardingCompletedAt: null,
-            quickbooksCustomerId: null,
-            active: row['status'] === 'active',
-          };
+          return presentClient(row);
         },
         // A CLIENT may only ever read itself; scoped() enforces that, and
         // passing the requested id narrows staff to the same one record.

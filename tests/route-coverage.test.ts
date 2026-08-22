@@ -58,7 +58,19 @@ const KNOWN_GAPS: Record<string, string> = {
  * expression, which then reported as a missing route.
  */
 const CALL = /\b(get|post|patch|del|getBlobUrl)\s*(?:<[^>]*>)?\s*\(\s*(['"`])([\s\S]*?)\2/g;
-const ROUTE = /app\.(get|post|patch|put|delete|all)\(\s*\n?\s*'(\/api\/[^']+)'/g;
+/*
+ * A route may carry a generic type argument — `app.get<{ Params: … }>(…)` — and
+ * the first version of this pattern required the `(` to follow the verb
+ * immediately. Five real, registered, reachable routes were therefore reported
+ * as missing.
+ *
+ * That direction of error is the dangerous one. A missing route reads as a
+ * broken screen, the obvious remedy is a KNOWN_GAPS entry, and the entry then
+ * suppresses the check for that path permanently — so a regex that cannot see
+ * a legal declaration quietly converts working code into a debt entry that
+ * hides the next real break.
+ */
+const ROUTE = /app\.(get|post|patch|put|delete|all)\s*(?:<[^(]*?>)?\s*\(\s*\n?\s*'(\/api\/[^']+)'/g;
 const VERB: Record<string, string> = {
   get: 'GET', post: 'POST', patch: 'PATCH', del: 'DELETE', getBlobUrl: 'GET',
 };
