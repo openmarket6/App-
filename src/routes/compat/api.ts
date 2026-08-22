@@ -30,7 +30,7 @@ import { parse, clientIp, userAgent } from '../../lib/http-helpers.js';
 import { writeAudit } from '../../lib/audit.js';
 import { badRequest, forbidden, notFound, conflict, AppError } from '../../lib/errors.js';
 import { publicUser, newInviteToken, type UserRow } from '../../auth/native.js';
-import { sendInviteEmail } from '../../services/notifications.js';
+import { sendInviteEmail, sendPasswordResetEmail } from '../../services/notifications.js';
 import { roleCatalogue, isStaff, ROLES, type Role } from '../../domain/capabilities.js';
 import {
   PERMIT_STAGES, emptyPipeline, toStage, isActiveStage, toTrade,
@@ -871,6 +871,81 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
 
       const { email: _email, name: _name, ...body } = result;
       return { ...body, emailed: delivery.ok };
+    },
+  );
+
+  /**
+   * Reset somebody else's password.
+   *
+   * The mirror of resend-invite for accounts that are past the invitation
+   * stage. It never sets a password -- it issues the same one-hour token the
+   * self-service flow uses and hands the administrator the link, so a person
+   * who cannot reach their email still has a route in and nobody but the
+   * account holder ever knows the password.
+   */
+  app.post(
+    '/api/users/:userId/reset-password',
+    { preHandler: [requireApiAuth, requireCapability('user:invite')] },
+    async (req) => {
+      const authCtx = req.apiAuth!;
+      const { userId } = parse(z.object({ userId: z.string().uuid() }), req.params, 'parameters');
+
+      const issued = await withServiceContext(
+        async (tx) => {
+          const target = await tx.one<UserRow>(
+            `select id, email, name, app_role, client_id, is_active, password_hash,
+                    token_version, created_at, last_login_at
+               from ocs.app_users where id = $1 and deleted_at is null for update`,
+            [userId],
+          );
+          if (!target) throw notFound('User');
+          if (!target.password_hash) {
+            throw badRequest(
+              'That user has never set a password, so there is nothing to reset — ' +
+                'reissue their invitation instead.',
+            );
+          }
+
+          const token = newInviteToken();
+          const expires = new Date(Date.now() + 60 * 60 * 1000);
+
+          await tx.query(
+            `update ocs.app_users
+                set reset_token = $2, reset_expires_at = $3
+              where id = $1`,
+            [userId, token, expires.toISOString()],
+          );
+
+          await writeAudit(tx, {
+            companyId: target.client_id,
+            actorUserId: authCtx.userId,
+            actorEmail: authCtx.email,
+            action: 'user.password_reset_issued',
+            entityType: 'app_user',
+            entityId: userId,
+            summary: `Password reset issued for ${target.email}`,
+            requestId: req.id,
+            ipAddress: clientIp(req),
+          });
+
+          return { target, token, expires };
+        },
+        { reason: 'issue_password_reset' },
+      );
+
+      const resetPath = `/reset-password?token=${issued.token}`;
+      const mail = await sendPasswordResetEmail({
+        to: issued.target.email,
+        name: issued.target.name,
+        resetPath,
+      });
+
+      return {
+        emailed: mail.ok,
+        emailError: mail.ok ? null : mail.error,
+        resetExpiresAt: issued.expires.toISOString(),
+        resetPath,
+      };
     },
   );
 

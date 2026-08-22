@@ -25,6 +25,8 @@ import {
   type UserRow, type AccessClaims,
 } from '../../auth/native.js';
 import type { Role } from '../../domain/capabilities.js';
+import { sendPasswordResetEmail } from '../../services/notifications.js';
+import { randomBytes } from 'node:crypto';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -609,6 +611,150 @@ export async function compatAuthRoutes(app: FastifyInstance): Promise<void> {
         return updated;
       },
       { reason: 'accept_invite' },
+    );
+
+    return sessionResponse(req, reply, user);
+  });
+
+  /**
+   * Ask for a password reset.
+   *
+   * Always answers the same way. Saying "no such account" here would turn the
+   * endpoint into a membership oracle -- anybody could test an email address
+   * against the firm's staff list -- and the person who genuinely mistyped
+   * their own address is helped by "check your inbox" plus a missing email
+   * just as well as by an error.
+   *
+   * Only accounts that already have a password are eligible. One that does not
+   * has an invitation outstanding instead, and issuing a reset for it would be
+   * a second route to the same takeover that accept-invite refuses.
+   */
+  app.post('/api/auth/forgot-password', async (req) => {
+    const body = parse(
+      z.object({ email: z.string().email() }),
+      req.body,
+      'password reset request',
+    );
+
+    const same = { ok: true as const };
+    const found = await findUserByEmail(body.email.trim().toLowerCase());
+    if (!found || !found.password_hash || !found.is_active) {
+      logger.info({ email: body.email }, 'password reset requested for an ineligible account');
+      return same;
+    }
+
+    const token = randomBytes(32).toString('base64url');
+    // An hour, not the invitation's seven days. A reset is sent to somebody
+    // who is sitting at the login screen right now.
+    const expires = new Date(Date.now() + 60 * 60 * 1000);
+    const resetPath = `/reset-password?token=${token}`;
+
+    await withServiceContext(
+      async (tx) => {
+        await tx.query(
+          `update ocs.app_users
+              set reset_token = $2, reset_expires_at = $3
+            where id = $1`,
+          [found.id, token, expires.toISOString()],
+        );
+        await writeAudit(tx, {
+          actorUserId: found.id,
+          actorEmail: found.email,
+          action: 'auth.password_reset_requested',
+          entityType: 'app_user',
+          entityId: found.id,
+          summary: 'Password reset requested',
+          requestId: req.id,
+          ipAddress: clientIp(req),
+          userAgent: userAgent(req),
+        });
+      },
+      { reason: 'request_password_reset' },
+    );
+
+    const mail = await sendPasswordResetEmail({
+      to: found.email,
+      name: found.name,
+      resetPath,
+    });
+    if (!mail.ok) {
+      // Nothing goes back to the caller -- the response must not vary. This is
+      // for whoever is reading the log wondering why nobody received anything.
+      logger.error({ error: mail.error }, 'password reset email not delivered');
+    }
+
+    return same;
+  });
+
+  /**
+   * Complete a reset. Its own token, deliberately not the invitation's.
+   */
+  app.post('/api/auth/reset-password', async (req, reply) => {
+    const body = parse(
+      z.object({ token: z.string().min(1), password: z.string().min(1) }),
+      req.body,
+      'password reset',
+    );
+    assertPasswordAcceptable(body.password);
+
+    const passwordHash = await hashPassword(body.password);
+
+    const user = await withServiceContext(
+      async (tx) => {
+        const found = await tx.one<UserRow & { reset_expires_at: string | null }>(
+          `select id, email, name, app_role, client_id, is_active, password_hash,
+                  token_version, created_at, last_login_at, reset_expires_at
+             from ocs.app_users
+            where reset_token = $1 and deleted_at is null
+            for update`,
+          [body.token],
+        );
+        if (!found) throw unauthorized('That reset link is not valid');
+        if (found.reset_expires_at && Date.parse(found.reset_expires_at) < Date.now()) {
+          throw unauthorized('That reset link has expired — ask for a new one');
+        }
+        if (!found.is_active) throw unauthorized('That reset link is not valid');
+
+        const updated = await tx.one<UserRow>(
+          `update ocs.app_users
+              set password_hash = $2,
+                  reset_token = null,
+                  reset_expires_at = null,
+                  token_version = token_version + 1,
+                  last_login_at = now()
+            where id = $1
+            returning id, email, name, app_role, client_id, is_active, password_hash,
+                      token_version, created_at, last_login_at`,
+          [found.id, passwordHash],
+        );
+
+        /*
+         * Every other session ends here. Whoever forced the reset may be the
+         * reason it was needed, and leaving their session alive would make the
+         * recovery cosmetic.
+         */
+        await tx.query(
+          `update ocs.refresh_tokens set revoked_at = now()
+            where user_id = $1 and revoked_at is null`,
+          [found.id],
+        );
+
+        await writeAudit(tx, {
+          companyId: found.client_id,
+          actorUserId: found.id,
+          actorEmail: found.email,
+          action: 'auth.password_reset',
+          entityType: 'app_user',
+          entityId: found.id,
+          summary: 'Password reset from an emailed link; all other sessions ended',
+          requestId: req.id,
+          ipAddress: clientIp(req),
+          userAgent: userAgent(req),
+        });
+
+        return updated!;
+      },
+      { reason: 'reset_password' },
     );
 
     return sessionResponse(req, reply, user);
