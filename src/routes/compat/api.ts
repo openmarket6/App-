@@ -30,6 +30,7 @@ import { parse, clientIp, userAgent } from '../../lib/http-helpers.js';
 import { writeAudit } from '../../lib/audit.js';
 import { badRequest, forbidden, notFound, conflict, AppError } from '../../lib/errors.js';
 import { publicUser, newInviteToken, type UserRow } from '../../auth/native.js';
+import { sendInviteEmail } from '../../services/notifications.js';
 import { roleCatalogue, isStaff, ROLES, type Role } from '../../domain/capabilities.js';
 import {
   PERMIT_STAGES, emptyPipeline, toStage, isActiveStage, toTrade,
@@ -579,6 +580,10 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
     );
 
     logger.info({ email: body.email, role: body.role }, 'user invited');
+
+    const acceptPath = `/accept-invite?token=${token}`;
+    const delivery = await sendInviteEmail({ to: body.email, name: body.name ?? null, acceptPath });
+
     reply.code(201);
 
     return {
@@ -588,7 +593,8 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
       // send is worse than one shown once to the person creating it.
       inviteToken: token,
       inviteExpiresAt: expires.toISOString(),
-      acceptPath: `/accept-invite?token=${token}`,
+      acceptPath,
+      emailed: delivery.ok,
     };
   });
 
@@ -796,7 +802,7 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
       const authCtx = req.apiAuth!;
       const { userId } = parse(z.object({ userId: z.string().uuid() }), req.params, 'parameters');
 
-      return withServiceContext(
+      const result = await withServiceContext(
         async (tx) => {
           const target = await tx.one<UserRow>(
             `select id, email, name, app_role, client_id, is_active, password_hash,
@@ -845,10 +851,26 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
             inviteToken: token,
             inviteExpiresAt: expires.toISOString(),
             acceptPath: `/accept-invite?token=${token}`,
+            email: target.email,
+            name: target.name,
           };
         },
         { reason: 'resend_invite' },
       );
+
+      /*
+       * Sent after the transaction commits, never inside it: an email is not
+       * rolled back, so mailing a link from a transaction that then fails
+       * would hand someone a token the database never kept.
+       */
+      const delivery = await sendInviteEmail({
+        to: result.email,
+        name: result.name,
+        acceptPath: result.acceptPath,
+      });
+
+      const { email: _email, name: _name, ...body } = result;
+      return { ...body, emailed: delivery.ok };
     },
   );
 
