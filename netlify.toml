@@ -21,7 +21,15 @@
   # `vite build` writes into ../public alongside the hand-written marketing
   # pages and rewrites app.html with the current content-hashed asset names, so
   # the deployed interface is now always the interface in this repository.
-  command = "cd web && npm install && npm run build"
+  #
+  # `npm ci` rather than `npm install`: it installs exactly what
+  # web/package-lock.json records, so a transitive dependency publishing a bad
+  # release cannot change what gets deployed on a day nobody touched the code.
+  #
+  # The marketing pages are generated too. They carry the price list, and a
+  # deploy that rebuilt the application but left last week's pricing on
+  # /pricing would be quietly wrong in the one place a prospect looks.
+  command = "npm ci --omit=dev --ignore-scripts && node scripts/build-site.mjs && cd web && npm ci && npm run build"
 
 [build.environment]
   # Pinned so a Netlify default bump cannot break the build on an unrelated day.
