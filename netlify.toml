@@ -152,6 +152,25 @@
   [headers.values]
     Cache-Control = "no-cache, must-revalidate"
 
+# The service worker must never be cached either, and for a worse reason than
+# the shell: a stale worker is STICKY. The browser keeps running the old one and
+# serving whatever it decides to serve, so a cached sw.js can pin a supervisor's
+# phone to a previous version of the app for as long as its own cache lives --
+# and the usual fix, "reload the page", is exactly what it intercepts.
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache, must-revalidate"
+    Service-Worker-Allowed = "/"
+
+# Content type matters here: browsers ignore a manifest served as text/plain,
+# and the symptom is an install prompt that silently never appears.
+[[headers]]
+  for = "/app.webmanifest"
+  [headers.values]
+    Content-Type = "application/manifest+json"
+    Cache-Control = "public, max-age=3600"
+
 # The marketing pages are regenerated on every deploy and are the first thing a
 # prospect sees, so a stale copy is worse than a revalidation request.
 [[headers]]

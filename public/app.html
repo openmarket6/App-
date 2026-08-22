@@ -9,8 +9,18 @@
     <link rel="icon" href="/favicon.ico" sizes="any" />
     <link rel="icon" type="image/png" href="/favicon.png" sizes="64x64" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/app.webmanifest" />
+    <!--
+      iOS ignores the manifest's display mode and reads these instead, which is
+      the difference between a supervisor tapping a home-screen icon and getting
+      the app, or getting Safari with an address bar eating the top of a screen
+      they are using one-handed on a roof.
+    -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="PM Portal" />
     <link rel="preload" href="/brand/1cs-mark-onnavy.png" as="image" />
-    <script type="module" crossorigin src="/assets/app-CNCKUqw9.js"></script>
+    <script type="module" crossorigin src="/assets/app-BMEwzsVv.js"></script>
     <link rel="stylesheet" crossorigin href="/assets/app-B9R-KQ0i.css">
   </head>
   <body>

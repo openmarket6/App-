@@ -31,3 +31,20 @@ createRoot(document.getElementById('root')!).render(
     </BrowserRouter>
   </StrictMode>,
 );
+
+/*
+ * Register the service worker.
+ *
+ * Only in production and only over HTTPS: a service worker in dev caches a
+ * shell that fights the dev server's hot reload, and the resulting "why is my
+ * change not showing" costs more time than offline support saves.
+ *
+ * Failure is swallowed on purpose. A supervisor whose browser refuses to
+ * register a worker should still get a working web app, not a blank screen —
+ * offline support is an improvement to this product, not a prerequisite for it.
+ */
+if ('serviceWorker' in navigator && import.meta.env.PROD) {
+  window.addEventListener('load', () => {
+    void navigator.serviceWorker.register('/sw.js').catch(() => undefined);
+  });
+}
