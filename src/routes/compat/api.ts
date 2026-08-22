@@ -393,13 +393,116 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
   // Jurisdictions
   // ---------------------------------------------------------------------------
 
+  /**
+   * Record a correction against a jurisdiction.
+   *
+   * Only the human-verified fields are writable. Everything else on the row
+   * comes from the generated dataset and is rebuilt wholesale, so allowing
+   * edits to it would produce changes that silently disappear on the next
+   * regeneration -- which is worse than not offering the edit.
+   */
+  app.patch(
+    '/api/jurisdictions/:id',
+    { preHandler: [requireApiAuth, requireCapability('jurisdiction:edit')] },
+    async (req) => {
+      const auth = req.apiAuth!;
+      const { id } = parse(z.object({ id: z.string().uuid() }), req.params, 'parameters');
+      const body = parse(
+        z.object({
+          portalUrl: z.string().trim().url().nullable().optional(),
+          contactPhone: z.string().trim().max(40).nullable().optional(),
+          portalUrlConfidence: z.enum(['low', 'high']).optional(),
+          automationApproved: z.boolean().optional(),
+          tosReviewNote: z.string().trim().max(2000).nullable().optional(),
+        }),
+        req.body,
+        'jurisdiction correction',
+      );
+
+      return scoped(req, async (tx) => {
+        const existing = await tx.one<{ id: string; tos_review_note: string | null }>(
+          `select id, tos_review_note from ocs.municipalities where id = $1 for update`,
+          [id],
+        );
+        if (!existing) throw notFound('Jurisdiction');
+
+        /*
+         * Mirrors the database constraint so the person gets a sentence rather
+         * than a constraint violation. Approving automation without recording
+         * who read the portal's terms is the one edit that is refused.
+         */
+        const noteAfter = body.tosReviewNote ?? existing.tos_review_note;
+        if (body.automationApproved === true && !noteAfter) {
+          throw badRequest(
+            'Approving automation requires a note recording who read this portal’s terms of service.',
+          );
+        }
+
+        const row = await tx.one<Record<string, unknown>>(
+          `update ocs.municipalities
+              set portal_url             = coalesce($2, portal_url),
+                  contact_phone          = coalesce($3, contact_phone),
+                  portal_url_confidence  = coalesce($4, portal_url_confidence),
+                  automation_approved    = coalesce($5, automation_approved),
+                  tos_review_note        = coalesce($6, tos_review_note),
+                  automation_approved_at = case
+                    when $5::boolean is true then now()
+                    when $5::boolean is false then null
+                    else automation_approved_at end,
+                  automation_approved_by = case
+                    when $5::boolean is true then $7::uuid
+                    when $5::boolean is false then null
+                    else automation_approved_by end,
+                  updated_at = now()
+            where id = $1
+            returning id, name, portal_url as "portalUrl",
+                      contact_phone as "contactPhone",
+                      portal_url_confidence as "portalUrlConfidence",
+                      automation_approved as "automationApproved",
+                      automation_approved_at as "automationApprovedAt",
+                      tos_review_note as "tosReviewNote"`,
+          [
+            id,
+            body.portalUrl === undefined ? null : body.portalUrl,
+            body.contactPhone === undefined ? null : body.contactPhone,
+            body.portalUrlConfidence ?? null,
+            body.automationApproved ?? null,
+            body.tosReviewNote === undefined ? null : body.tosReviewNote,
+            auth.userId,
+          ],
+        );
+
+        await writeAudit(tx, {
+          actorUserId: auth.userId,
+          actorEmail: auth.email,
+          action: 'jurisdiction.corrected',
+          entityType: 'municipality',
+          entityId: id,
+          summary:
+            body.automationApproved === true
+              ? `Automation approved for ${row!['name'] as string}`
+              : `Correction recorded for ${row!['name'] as string}`,
+          requestId: req.id,
+          ipAddress: clientIp(req),
+        });
+
+        return { jurisdiction: row };
+      });
+    },
+  );
+
   app.get('/api/jurisdictions', { preHandler: [requireApiAuth, requireCapability('jurisdiction:read')] }, async (req) => {
     return scoped(req, async (tx) => {
       const rows = await tx.many<Record<string, unknown>>(
         `select id, id as "jurisdictionId", name, kind::text, county, state,
                 portal_url as "portalUrl", platform::text as platform,
                 status_check_enabled, adapter_verified_at,
-                status_check_enabled as "statusCheckEnabled"
+                status_check_enabled as "statusCheckEnabled",
+                contact_phone as "contactPhone",
+                portal_url_confidence as "portalUrlConfidence",
+                automation_approved as "automationApproved",
+                automation_approved_at as "automationApprovedAt",
+                tos_review_note as "tosReviewNote"
            from ocs.municipalities
           where is_active
           order by kind, name

@@ -24,6 +24,10 @@ import {
   permitRequestNextStep, type PortalFolder,
 } from '../../shared/portal.js';
 import type { DocumentCategory, PermitDocument } from '../../shared/types.js';
+import {
+  buildStorageKey, uploadObject, assertAllowedContentType,
+} from '../../services/storage.js';
+import { createHash } from 'node:crypto';
 
 /**
  * Translating between two category vocabularies.
@@ -75,6 +79,23 @@ const toPortalCategory = (stored: string): DocumentCategory =>
   CATEGORY_TO_PORTAL[stored] ?? 'OTHER';
 
 /** A contractor's own company, always. Staff may name one. */
+/** 20 MB, matching the documents API. Larger files need a signed upload URL. */
+const MAX_PORTAL_UPLOAD_BYTES = 20 * 1024 * 1024;
+
+/** Portal categories to the stored enum, as compat/documents does it. */
+const TO_STORED_CATEGORY: Record<string, string> = {
+  SUBMITTAL: 'permit_application',
+  PLAN_SET: 'drawing',
+  PRODUCT_APPROVAL: 'drawing',
+  CORRECTION_RESPONSE: 'permit_application',
+  AGENCY_ISSUED: 'approved_plan',
+  JOB_PHOTO: 'photo',
+  SUPERVISION_PHOTO: 'photo',
+  COMPLIANCE: 'license',
+  SIGNED_AGREEMENT: 'contract',
+  OTHER: 'other',
+};
+
 async function portalScope<T>(
   req: FastifyRequest,
   fn: (tx: Tx, companyId: string) => Promise<T>,
@@ -249,6 +270,165 @@ export async function compatPortalRoutes(app: FastifyInstance): Promise<void> {
    * UI can tuck it under the current one. Five rows called "roof-plan.pdf" is
    * how the wrong revision reaches a plans examiner.
    */
+  /**
+   * Upload into a portal folder.
+   *
+   * The folder decides what the document is: its path carries the permit, and
+   * the tree says which categories belong there. Nothing about the filing is
+   * taken from the request body, which is why the client sends no category,
+   * permitId or clientId -- a contractor should not be able to file a photo as
+   * a licence by editing a payload.
+   *
+   * Fastify wildcards only match at the end of a path, so the upload arrives
+   * as part of the wildcard and the trailing segment is stripped here.
+   */
+  app.post(
+    '/api/portal/folders/*',
+    { preHandler: [requireApiAuth, requireCapability('portal:upload_own')] },
+    async (req, reply) => {
+      const auth = req.apiAuth!;
+      const raw = (req.params as Record<string, string>)['*'] ?? '';
+      if (!raw.endsWith('/upload')) throw notFound('That is not an upload target');
+      const folderPath = raw
+        .slice(0, -'/upload'.length)
+        .split('/')
+        .map((seg) => decodeURIComponent(seg))
+        .join('/')
+        .replace(/^\/+|\/+$/g, '');
+
+      const body = parse(
+        z.object({
+          fileName: z.string().trim().min(1).max(300),
+          contentType: z.string().trim().min(1).max(120),
+          sizeBytes: z.number().int().min(1).max(MAX_PORTAL_UPLOAD_BYTES),
+          dataBase64: z.string().min(1),
+          capturedAt: z.string().datetime().nullable().optional(),
+        }),
+        req.body,
+        'upload',
+      );
+
+      assertAllowedContentType(body.contentType);
+      const bytes = Buffer.from(body.dataBase64, 'base64');
+      if (bytes.byteLength > MAX_PORTAL_UPLOAD_BYTES) {
+        throw badRequest('That file is larger than 20 MB.');
+      }
+      if (bytes.byteLength !== body.sizeBytes) {
+        throw badRequest('The upload did not arrive intact — try again.');
+      }
+
+      const result = await portalScope(req, async (tx, companyId) => {
+        const input = await treeInputFor(tx, companyId);
+        const tree = buildFolderTree({
+          documents: input.documents,
+          projects: input.projects,
+          permits: input.permits,
+        });
+        const folder = findFolder(tree, folderPath);
+        if (!folder) throw notFound('Folder');
+        if (!folder.acceptsUpload) {
+          throw badRequest(`${folder.name} is not a folder you can upload into.`);
+        }
+
+        const category = folder.uploadCategories[0];
+        if (!category) throw badRequest(`${folder.name} does not accept uploads.`);
+
+        /*
+         * The permit is read out of the folder path rather than trusted from
+         * the caller. A path that names a permit the contractor cannot see
+         * never reaches here, because the tree was built from their own rows.
+         */
+        const permitMatch = /permits\/([0-9a-f-]{36})/i.exec(folder.path);
+        const projectMatch = /projects\/([0-9a-f-]{36})/i.exec(folder.path);
+
+        const doc = await tx.one<{ id: string }>(
+          `insert into ocs.documents
+             (company_id, permit_id, project_id, name, category, uploaded_by,
+              version_count, captured_at)
+           values ($1,$2,$3,$4,$5::ocs.document_category,$6,1,$7::timestamptz)
+           returning id`,
+          [
+            companyId,
+            permitMatch?.[1] ?? null,
+            projectMatch?.[1] ?? null,
+            body.fileName,
+            TO_STORED_CATEGORY[category] ?? 'other',
+            auth.userId,
+            body.capturedAt ?? null,
+          ],
+        );
+
+        const key = buildStorageKey({
+          companyId, documentId: doc!.id, versionNumber: 1, fileName: body.fileName,
+        });
+        // Bytes first: a failed upload must leave a document with no version,
+        // never a version pointing at objects that are not there.
+        const stored = await uploadObject(key, bytes, body.contentType);
+        const sha256 = createHash('sha256').update(bytes).digest('hex');
+
+        const version = await tx.one<{ id: string }>(
+          `insert into ocs.document_versions
+             (company_id, document_id, version_number, storage_bucket, storage_key,
+              file_name, content_type, byte_size, checksum_sha256, uploaded_by, upload_state)
+           values ($1,$2,1,$3,$4,$5,$6,$7,$8,$9,'stored')
+           returning id`,
+          [
+            companyId, doc!.id, stored.bucket, stored.key, body.fileName,
+            body.contentType, bytes.byteLength, sha256, auth.userId,
+          ],
+        );
+
+        await tx.query(
+          `update ocs.documents set current_version_id = $2 where id = $1`,
+          [doc!.id, version!.id],
+        );
+
+        await writeAudit(tx, {
+          companyId,
+          actorUserId: auth.userId,
+          actorEmail: auth.email,
+          action: 'portal.document_uploaded',
+          entityType: 'document',
+          entityId: doc!.id,
+          summary: `${body.fileName} uploaded to ${folder.name}`,
+          requestId: req.id,
+          ipAddress: clientIp(req),
+          userAgent: userAgent(req),
+        });
+
+        const document: PermitDocument = {
+          id: doc!.id,
+          permitId: permitMatch?.[1] ?? null,
+          clientId: companyId,
+          category,
+          contentType: body.contentType,
+          capturedAt: body.capturedAt ?? null,
+          geo: null,
+          sha256,
+          requirementKey: '',
+          fileName: body.fileName,
+          version: 1,
+          supersedesId: null,
+          submittedOnCycle: null,
+          status: 'UPLOADED',
+          sizeBytes: bytes.byteLength,
+          uploadedAt: new Date().toISOString(),
+          storageKey: stored.key,
+          uploadedBy: auth.userId,
+        } as PermitDocument;
+
+        return {
+          folder: { path: folder.path, name: folder.name },
+          document,
+          superseded: null,
+        };
+      });
+
+      reply.code(201);
+      return result;
+    },
+  );
+
   app.get(
     '/api/portal/folders/*',
     { preHandler: [requireApiAuth, requireCapability('portal:read_own')] },
