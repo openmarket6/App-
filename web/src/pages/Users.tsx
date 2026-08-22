@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ROLE_DESCRIPTIONS, ROLE_LABELS, can, type Role } from '@flph/shared';
+import { ROLES, ROLE_DESCRIPTIONS, ROLE_LABELS, can, type Role } from '@flph/shared';
 import { get, patch, post } from '../lib/api.ts';
 import { useAuth } from '../lib/auth.tsx';
 import { fmtDate, fmtDateTime } from '../lib/format.ts';
@@ -27,11 +27,20 @@ import { LoadingPanel } from '../components/Spinner.tsx';
  * active administrator cannot be demoted or deactivated.
  */
 
-const ASSIGNABLE: Role[] = ['ADMIN', 'PERMIT_TECH', 'VIEWER', 'CLIENT'];
+/*
+ * Every role except PENDING can be assigned. Deriving this from the shared
+ * ROLES tuple rather than restating it means a role added to the enum (and to
+ * the API's own /users/roles list, which is built from the same tuple) appears
+ * in the dropdown and the legend without a second edit here — the drift that
+ * previously hid SITE_SUPERVISOR and ENGINEER from the UI.
+ */
+const ASSIGNABLE: Role[] = ROLES.filter((r) => r !== 'PENDING');
 
 const ROLE_CLASS: Record<Role, string> = {
   ADMIN: 'badge-blue',
   PERMIT_TECH: 'badge-blue',
+  SITE_SUPERVISOR: 'badge-blue',
+  ENGINEER: 'badge-blue',
   VIEWER: 'badge-gray',
   CLIENT: 'badge-green',
   PENDING: 'badge-amber',
