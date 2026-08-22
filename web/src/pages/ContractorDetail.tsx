@@ -744,7 +744,7 @@ function ReviewDrawer({
 
   const review = useMutation({
     mutationFn: (decision: 'APPROVE' | 'REJECT') =>
-      patch(`/compliance/${item.id}/review`, {
+      post(`/compliance/${item.id}/review`, {
         decision,
         reviewNote: note.trim() || null,
         ...(effectiveDate ? { effectiveDate: new Date(effectiveDate).toISOString() } : {}),
