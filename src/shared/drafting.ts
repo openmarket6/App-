@@ -1,4 +1,4 @@
-import type { Cents, ID, PermitType } from './index.ts';
+import type { Cents, ID, PermitType } from './index.js';
 
 /**
  * In-house drafting and engineering.

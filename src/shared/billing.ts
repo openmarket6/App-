@@ -1,5 +1,5 @@
-import type { PermitType } from './enums.ts';
-import type { Cents, ID } from './types.ts';
+import type { PermitType } from './enums.js';
+import type { Cents, ID } from './types.js';
 
 /**
  * Two service lines, deliberately modelled as one dimension on every permit

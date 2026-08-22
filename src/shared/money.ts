@@ -1,4 +1,4 @@
-import type { Cents } from './types.ts';
+import type { Cents } from './types.js';
 
 /** Currency is integer cents throughout. Parse at the edges, never mid-pipeline. */
 export function dollarsToCents(dollars: number): Cents {

@@ -1,5 +1,5 @@
-import { AGENCY_HELD_STAGES, APPLICANT_HELD_STAGES, TERMINAL_STAGES } from './enums.ts';
-import type { Jurisdiction, Permit, RiskAssessment } from './types.ts';
+import { AGENCY_HELD_STAGES, APPLICANT_HELD_STAGES, TERMINAL_STAGES } from './enums.js';
+import type { Jurisdiction, Permit, RiskAssessment } from './types.js';
 
 /**
  * Risk is jurisdiction-relative.

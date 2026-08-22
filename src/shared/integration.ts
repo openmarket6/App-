@@ -1,5 +1,5 @@
-import type { IntegrationTier, Platform } from './enums.ts';
-import type { Jurisdiction } from './types.ts';
+import type { IntegrationTier, Platform } from './enums.js';
+import type { Jurisdiction } from './types.js';
 
 /**
  * The integration readiness engine.

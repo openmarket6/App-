@@ -8,7 +8,7 @@ import type {
   RiskLevel,
   Role,
   SourceChannel,
-} from './enums.ts';
+} from './enums.js';
 
 export type ID = string;
 /** Money is integer cents. Everywhere. No floats touch currency. */

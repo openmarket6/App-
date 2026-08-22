@@ -1,5 +1,5 @@
-import type { DocumentCategory, ID, PermitDocument } from './types.ts';
-import { COMPLIANCE_LABELS, type ComplianceKind } from './compliance.ts';
+import type { DocumentCategory, ID, PermitDocument } from './types.js';
+import { COMPLIANCE_LABELS, type ComplianceKind } from './compliance.js';
 
 /**
  * The contractor portal's information architecture.

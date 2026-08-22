@@ -1,4 +1,4 @@
-import type { Role } from './enums.ts';
+import type { Role } from './enums.js';
 
 /**
  * Capability-based permissions.

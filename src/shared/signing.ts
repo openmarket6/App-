@@ -1,4 +1,4 @@
-import type { ID } from './types.ts';
+import type { ID } from './types.js';
 
 /**
  * In-app signing.

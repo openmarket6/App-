@@ -19,7 +19,7 @@ export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: {
-      '@flph/shared': fileURLToPath(new URL('./src/shared/index.ts', import.meta.url)),
+      '@flph/shared': fileURLToPath(new URL('../src/shared/index.ts', import.meta.url)),
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
   },

@@ -1,4 +1,4 @@
-import type { PermitStage } from './enums.ts';
+import type { PermitStage } from './enums.js';
 
 /**
  * Status normalization.

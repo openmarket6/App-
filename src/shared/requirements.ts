@@ -1,5 +1,5 @@
-import type { PermitType } from './enums.ts';
-import type { Jurisdiction, Project, RequirementItem, RequirementOverride } from './types.ts';
+import type { PermitType } from './enums.js';
+import type { Jurisdiction, Project, RequirementItem, RequirementOverride } from './types.js';
 
 /**
  * The requirements engine composes in layers:

@@ -1,4 +1,4 @@
-import type { Cents, ID } from './types.ts';
+import type { Cents, ID } from './types.js';
 
 /**
  * Contractor compliance.
