@@ -20,6 +20,7 @@
  * None of them exposes dependency hostnames or configuration -- health
  * endpoints are public, and they should not be a reconnaissance tool.
  */
+import { withServiceContext } from '../db/tenant.js';
 import type { FastifyInstance } from 'fastify';
 import { appPool, servicePool, usingSeparateServiceRole } from '../db/pool.js';
 import { queueStats } from '../jobs/queue.js';
@@ -99,9 +100,63 @@ export async function healthRoutes(app: FastifyInstance): Promise<void> {
    * Operational snapshot. Unauthenticated on purpose but deliberately dull:
    * job counts by status and nothing tenant-identifying.
    */
+  /**
+   * Queue depth AND whether anything is draining it.
+   *
+   * Depth alone is not health. An empty queue with a dead worker looks exactly
+   * like an empty queue with a healthy one, and that ambiguity is how scheduled
+   * municipal checks stopped firing on the previous build without anyone
+   * noticing for months. The heartbeat is what tells them apart.
+   *
+   * Answers 503 when no worker has checked in, because a system that cannot do
+   * background work is not healthy even while it serves pages perfectly.
+   */
   app.get('/healthz/queue', async (_req, reply) => {
     try {
-      return { status: 'ok', jobs: await queueStats() };
+      const [jobs, worker] = await Promise.all([
+        queueStats(),
+        withServiceContext(
+          async (tx) =>
+            tx.one<{
+              alive: boolean; last_seen_at: string | null; started_at: string | null;
+              jobs_processed: string | null; last_job_at: string | null; instance_id: string | null;
+            }>(
+              `select ocs.worker_is_alive('default') as alive,
+                      h.last_seen_at, h.started_at, h.jobs_processed,
+                      h.last_job_at, h.instance_id
+                 from (select 1) as _
+                 left join ocs.worker_heartbeats h on h.queue = 'default'`,
+            ),
+          { reason: 'queue_health' },
+        ),
+      ]);
+
+      const alive = worker?.alive === true;
+
+      const body = {
+        status: alive ? 'ok' : 'degraded',
+        jobs,
+        worker: worker?.last_seen_at
+          ? {
+              alive,
+              lastSeenAt: worker.last_seen_at,
+              startedAt: worker.started_at,
+              jobsProcessed: Number(worker.jobs_processed ?? 0),
+              lastJobAt: worker.last_job_at,
+              instanceId: worker.instance_id,
+            }
+          : null,
+        note: alive
+          ? undefined
+          : worker?.last_seen_at
+            ? 'A worker has run but has not checked in recently. Scheduled municipal ' +
+              'checks, licence reminders and notifications are not being processed.'
+            : 'No worker has ever checked in. Nothing is processing background work — ' +
+              'confirm the worker service is deployed and WORKER_ENABLED is true.',
+      };
+
+      if (!alive) reply.code(503);
+      return body;
     } catch (err) {
       logger.error({ err }, 'queue stats failed');
       reply.code(503);

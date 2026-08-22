@@ -80,7 +80,8 @@ async function processJob(job: JobRow): Promise<void> {
     }
 
     const result = await runWithTimeout(job, handler);
-    await completeJob(job.id, result);
+    recordJobProcessed();
+      await completeJob(job.id, result);
     log.info({ durationMs: Date.now() - started }, 'job completed');
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));
@@ -142,9 +143,69 @@ async function tickScheduler(): Promise<void> {
 
 const QUEUES = ['default', 'integrations', 'notifications'];
 
+
+/**
+ * Records that this worker is alive and what it has done.
+ *
+ * Written on a timer rather than on every poll: the loop spins several times a
+ * second when idle, and a write per spin would be thousands of pointless
+ * updates an hour to say nothing changed.
+ *
+ * Failures here are logged and swallowed. A worker that stops processing jobs
+ * because it could not write a heartbeat has turned an observability feature
+ * into the outage it was meant to detect.
+ */
+let lastHeartbeatAt = 0;
+let jobsProcessedTotal = 0;
+let lastJobAt: Date | null = null;
+
+const HEARTBEAT_INTERVAL_MS = 15_000;
+
+export function recordJobProcessed(): void {
+  jobsProcessedTotal += 1;
+  lastJobAt = new Date();
+}
+
+async function writeHeartbeat(force = false): Promise<void> {
+  const now = Date.now();
+  if (!force && now - lastHeartbeatAt < HEARTBEAT_INTERVAL_MS) return;
+  lastHeartbeatAt = now;
+
+  try {
+    await withServiceContext(
+      async (tx) => {
+        await tx.query(
+          `insert into ocs.worker_heartbeats
+             (queue, instance_id, last_seen_at, jobs_processed, last_job_at, commit_sha)
+           values ('default', $1, now(), $2, $3, $4)
+           on conflict (queue) do update
+             set instance_id = excluded.instance_id,
+                 last_seen_at = now(),
+                 jobs_processed = excluded.jobs_processed,
+                 last_job_at = coalesce(excluded.last_job_at, ocs.worker_heartbeats.last_job_at),
+                 -- started_at is NOT touched: it marks when this instance came
+                 -- up, and a restart loop is only visible if it survives the
+                 -- upsert.
+                 commit_sha = excluded.commit_sha`,
+          [
+            WORKER_ID,
+            jobsProcessedTotal,
+            lastJobAt,
+            process.env['RENDER_GIT_COMMIT'] ?? null,
+          ],
+        );
+      },
+      { reason: 'worker_heartbeat' },
+    );
+  } catch (err) {
+    logger.warn({ err }, 'could not write worker heartbeat; continuing');
+  }
+}
+
 async function loop(): Promise<void> {
   while (!shuttingDown) {
     try {
+      await writeHeartbeat();
       await tickScheduler();
 
       const capacity = env.WORKER_CONCURRENCY - inFlight;
@@ -185,6 +246,9 @@ export async function startWorker(): Promise<void> {
     { workerId: WORKER_ID, concurrency: env.WORKER_CONCURRENCY, handlers: registeredJobTypes() },
     'worker started',
   );
+  // Written immediately, so a worker that dies during its first poll is still
+  // distinguishable from one that never started at all.
+  await writeHeartbeat(true);
   await loop();
 }
 
