@@ -24,6 +24,7 @@ import { withServiceContext } from '../db/tenant.js';
 import type { FastifyInstance } from 'fastify';
 import { appPool, servicePool, usingSeparateServiceRole } from '../db/pool.js';
 import { queueStats } from '../jobs/queue.js';
+import { emailConfigured } from '../services/notifications.js';
 import { logger } from '../lib/logger.js';
 
 const startedAt = Date.now();
@@ -65,6 +66,18 @@ export async function healthRoutes(app: FastifyInstance): Promise<void> {
       driver: 'postgres',
       brand: 'One Contractor Solutions',
       time: new Date().toISOString(),
+      /*
+       * Whether outbound mail is configured at all -- a boolean, never the key.
+       *
+       * Invitations and password resets are sent from here, and when no
+       * provider is set they fail silently: the account is created, the link is
+       * returned to whoever clicked, and the person it was for is told nothing.
+       * That has already cost two people their logins. Reporting it here means
+       * the hourly contract check sees the moment it starts working, and the
+       * moment it ever stops -- an expired or revoked key looks exactly like
+       * never having configured one.
+       */
+      emailConfigured: emailConfigured(),
     };
   });
 
