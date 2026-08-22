@@ -1,6 +1,6 @@
 // GENERATED FILE — do not edit.
 // Source: data/jurisdictions.json  (regenerate with: node scripts/gen-dataset.mjs)
-import type { Jurisdiction } from '../types.ts';
+import type { Jurisdiction } from '../types.js';
 
 export const JURISDICTIONS: Jurisdiction[] = [
   {

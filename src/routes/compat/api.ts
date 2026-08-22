@@ -38,6 +38,10 @@ import {
   type PermitStage,
 } from './mapping.js';
 import { logger } from '../../lib/logger.js';
+import {
+  buildRoadmap, pathwayForTier, matchJurisdiction, UNKNOWN_GATE,
+  type Jurisdiction,
+} from '../../shared/index.js';
 
 /**
  * Run a query in the right access mode for the caller.
@@ -90,7 +94,7 @@ const clientFilter = (companyId: string | null) => (companyId ? ` and company_id
  */
 export const NOT_MIGRATED_AREAS = [
   'signing',
-  'connectors', 'integrations',
+  'connectors',
   /*
    * Google Drive is not "not yet" — it is not happening.
    *
@@ -518,14 +522,31 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
           limit 1000`,
       );
 
-      const jurisdictions = rows.map((r) => ({
-        ...r,
-        platform: toPlatformLabel(r.platform as string | null),
-        integrationTier: toIntegrationTier(r as never),
-        paperOnly: !r.platform || r.platform === 'none',
-        medianReviewDays: null,
-        reviewSampleSize: 0,
-      }));
+      /*
+       * The gate comes from the reference dataset, matched by name and county.
+       *
+       * Without it every row arrived with `gate` undefined, and the connector
+       * screen reads j.gate[key] directly — so that screen could not have
+       * worked even once its own endpoints existed.
+       */
+      const jurisdictions = rows.map((r) => {
+        const ref = matchJurisdiction(
+          r['name'] as string, r['county'] as string, r['kind'] as string,
+        );
+        return {
+          ...r,
+          slug: ref?.slug ?? null,
+          platform: ref?.platform ?? toPlatformLabel(r.platform as string | null),
+          integrationTier: ref?.integrationTier ?? toIntegrationTier(r as never),
+          gate: ref?.gate ?? UNKNOWN_GATE,
+          hvhz: ref?.hvhz ?? false,
+          windBorneDebris: ref?.windBorneDebris ?? false,
+          designWindSpeedMph: ref?.designWindSpeedMph ?? null,
+          paperOnly: ref ? ref.paperOnly : (!r.platform || r.platform === 'none'),
+          medianReviewDays: null,
+          reviewSampleSize: 0,
+        };
+      });
 
       return { jurisdictions, total: jurisdictions.length };
     });
@@ -535,6 +556,151 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
   // Supervision — site visits and photographs
   // ---------------------------------------------------------------------------
 
+
+  /**
+   * The connector roadmap: what we can file electronically today, what we could
+   * reach, and what stands in the way.
+   *
+   * Both of these answered 501 with a message telling the reader to use a
+   * Netlify deployment that no longer exists. The data was all here — the
+   * reference dataset, the readiness engine in src/shared, and our own permit
+   * counts — it simply had no route.
+   *
+   * Computed by buildRoadmap, the same shared function the screen would use, so
+   * the ranking here and any ranking rendered there cannot disagree.
+   */
+  async function jurisdictionsWithVolume(tx: Tx) {
+    const rows = await tx.many<Record<string, unknown>>(
+      `select m.id, m.name, m.county, m.kind::text as kind, m.platform::text as platform,
+              m.portal_url as "portalUrl",
+              m.automation_approved as "automationApproved",
+              m.portal_url_confidence as "portalUrlConfidence",
+              m.status_check_enabled, m.adapter_verified_at,
+              (select count(*) from ocs.permits p
+                where p.municipality_id = m.id and p.deleted_at is null) as "ourVolume",
+              exists (select 1 from ocs.integration_credentials c
+                       where c.municipality_id = m.id) as "hasCredentials"
+         from ocs.municipalities m
+        where m.is_active
+        limit 1000`,
+    );
+
+    const jurisdictions: Jurisdiction[] = [];
+    const volume: Record<string, number> = {};
+    const credentialed = new Set<string>();
+    let unmatched = 0;
+
+    for (const r of rows) {
+      const id = r['id'] as string;
+      const ref = matchJurisdiction(
+        r['name'] as string, r['county'] as string, r['kind'] as string,
+      );
+      if (!ref) unmatched += 1;
+      volume[id] = Number(r['ourVolume'] ?? 0);
+      if (r['hasCredentials'] === true) credentialed.add(id);
+
+      jurisdictions.push({
+        ...(ref ?? ({} as Jurisdiction)),
+        // The DATABASE row is the identity — the dataset is reference data
+        // hanging off it, not the other way round. Using the dataset's id would
+        // key the roadmap to something no permit points at.
+        id,
+        slug: ref?.slug ?? String(id),
+        name: r['name'] as string,
+        county: r['county'] as string,
+        kind: ref?.kind ?? 'municipality',
+        platform: ref?.platform ?? toPlatformLabel(r['platform'] as string | null),
+        integrationTier: ref?.integrationTier ?? toIntegrationTier(r as never),
+        gate: ref?.gate ?? UNKNOWN_GATE,
+        portalUrl: (r['portalUrl'] as string | null) ?? ref?.portalUrl ?? null,
+        automationApproved: Boolean(r['automationApproved']),
+        paperOnly: ref ? ref.paperOnly : true,
+      } as Jurisdiction);
+    }
+
+    return { jurisdictions, volume, credentialed, unmatched };
+  }
+
+  app.get(
+    '/api/integrations/summary',
+    { preHandler: [requireApiAuth, requireCapability('jurisdiction:read')] },
+    async (req) =>
+      scoped(req, async (tx) => {
+        const { jurisdictions, credentialed, unmatched } = await jurisdictionsWithVolume(tx);
+
+        const byPlatform: Record<string, number> = {};
+        const byTier: Record<string, number> = {};
+        const byPathway: Record<string, number> = { api: 0, rpa: 0, manual: 0 };
+        let automationApproved = 0;
+        let paperOnly = 0;
+        let portalUrlKnown = 0;
+
+        for (const j of jurisdictions) {
+          byPlatform[j.platform] = (byPlatform[j.platform] ?? 0) + 1;
+          byTier[j.integrationTier] = (byTier[j.integrationTier] ?? 0) + 1;
+          // What we can do TODAY, which is what the tier records. The target
+          // pathway is a different question and buildRoadmap answers it.
+          const pathway = pathwayForTier(j.integrationTier);
+          byPathway[pathway] = (byPathway[pathway] ?? 0) + 1;
+          if (j.automationApproved) automationApproved += 1;
+          if (j.paperOnly) paperOnly += 1;
+          if (j.portalUrl) portalUrlKnown += 1;
+        }
+
+        return {
+          totalJurisdictions: jurisdictions.length,
+          byPlatform,
+          byTier,
+          byPathway,
+          automationApproved,
+          withCredentials: credentialed.size,
+          paperOnly,
+          portalUrlKnown,
+          /*
+           * Said out loud. Five jurisdictions have no reference entry, so they
+           * count as manual — and a number that quietly includes unknowns
+           * reads as a measurement rather than a gap.
+           */
+          withoutReferenceData: unmatched,
+        };
+      }),
+  );
+
+  app.get(
+    '/api/integrations/roadmap',
+    { preHandler: [requireApiAuth, requireCapability('jurisdiction:read')] },
+    async (req) =>
+      scoped(req, async (tx) => {
+        const { jurisdictions, volume, credentialed } = await jurisdictionsWithVolume(tx);
+        const summary = buildRoadmap(jurisdictions, volume, credentialed);
+        const byId = new Map(jurisdictions.map((j) => [j.id, j]));
+
+        const decorate = (r: (typeof summary.items)[number]) => {
+          const j = byId.get(r.jurisdictionId);
+          return {
+            ...r,
+            ourVolume: volume[r.jurisdictionId] ?? 0,
+            jurisdiction: j
+              ? {
+                  name: j.name,
+                  platform: j.platform,
+                  integrationTier: j.integrationTier,
+                  portalUrl: j.portalUrl,
+                }
+              : null,
+          };
+        };
+
+        return {
+          items: summary.items.map(decorate),
+          quickWins: summary.quickWins.map(decorate),
+          totalVolume: summary.totalVolume,
+          coverageToday: summary.coverageToday,
+          coverageAtTarget: summary.coverageAtTarget,
+          jurisdictionsFor80Pct: summary.jurisdictionsFor80Pct,
+        };
+      }),
+  );
 
   // ---------------------------------------------------------------------------
   // Users and role assignment
