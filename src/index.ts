@@ -49,6 +49,7 @@ import { compatProjectsRoutes } from './routes/compat/projects.js';
 import { compatComplianceRoutes } from './routes/compat/compliance.js';
 import { compatDocumentsRoutes } from './routes/compat/documents.js';
 import { compatGeneratedDocumentsRoutes } from './routes/compat/generated-documents.js';
+import { compatMailingRoutes } from './routes/compat/mailings.js';
 import { compatInvoiceRoutes } from './routes/compat/invoices.js';
 import { compatSupervisionRoutes } from './routes/compat/supervision.js';
 import { supervisionRoutes } from './routes/supervision.js';
@@ -297,6 +298,7 @@ export async function buildServer() {
   await app.register(compatComplianceRoutes);
   await app.register(compatDocumentsRoutes);
   await app.register(compatGeneratedDocumentsRoutes);
+  await app.register(compatMailingRoutes);
   await app.register(compatInvoiceRoutes);
   await app.register(compatSupervisionRoutes);
   await app.register(compatApiRoutes);

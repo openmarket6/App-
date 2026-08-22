@@ -80,6 +80,30 @@ interface ClientRow {
   name: string;
 }
 
+interface MailQuote {
+  mailClass: string;
+  mailClassLabel: string;
+  costPerRecipientCents: number;
+  mailable: boolean;
+  reason: string | null;
+  configured: boolean;
+}
+
+interface Mailing {
+  id: string;
+  status: string;
+  mailClassLabel: string;
+  recipientRoleLabel: string;
+  toName: string;
+  toCity: string;
+  toState: string;
+  trackingNumber: string | null;
+  chargedCostCents: number | null;
+  expectedDeliveryOn: string | null;
+  deliveredAt: string | null;
+  returnedAt: string | null;
+}
+
 const money = (cents: number) =>
   `$${(cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
@@ -417,21 +441,24 @@ export default function DocumentsGenerate() {
             </div>
 
             {made && (
-              <div className="mt-4 rounded border border-emerald-300 bg-emerald-50 px-3 py-3 text-sm text-emerald-900">
-                <div className="font-semibold">{made.kindLabel} produced.</div>
-                <div className="mt-1 text-xs">
-                  Stored with a SHA-256 of {made.sha256.slice(0, 12)}… so a printed copy can
-                  be checked against this record.
+              <>
+                <div className="mt-4 rounded border border-emerald-300 bg-emerald-50 px-3 py-3 text-sm text-emerald-900">
+                  <div className="font-semibold">{made.kindLabel} produced.</div>
+                  <div className="mt-1 text-xs">
+                    Stored with a SHA-256 of {made.sha256.slice(0, 12)}… so a printed copy can
+                    be checked against this record.
+                  </div>
+                  <a
+                    className="mt-2 inline-block underline"
+                    href={`/api/generated-documents/${made.id}/html`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Open it
+                  </a>
                 </div>
-                <a
-                  className="mt-2 inline-block underline"
-                  href={`/api/generated-documents/${made.id}/html`}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Open it
-                </a>
-              </div>
+                <MailPanel documentId={made.id} />
+              </>
             )}
           </div>
 
@@ -482,5 +509,242 @@ export default function DocumentsGenerate() {
         </div>
       )}
     </div>
+  );
+}
+
+// -----------------------------------------------------------------------------
+
+/**
+ * Posting the document that was just produced.
+ *
+ * The price and the mail class are shown BEFORE the button, not after it.
+ * Certified mail with a return receipt is ten dollars a recipient, and finding
+ * that out from an invoice is how people stop trusting a button.
+ *
+ * One recipient at a time, deliberately. "Three of five went" is not something
+ * a lien dispute can work with, and somebody sending three letters can press
+ * this three times.
+ */
+function MailPanel({ documentId }: { documentId: string }) {
+  const qc = useQueryClient();
+  const [to, setTo] = useState({
+    name: '', line1: '', line2: '', city: '', state: '', postalCode: '',
+  });
+  const [role, setRole] = useState('owner');
+  const [acceptUnverified, setAcceptUnverified] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [suggested, setSuggested] = useState<typeof to | null>(null);
+
+  const quoteQ = useQuery({
+    queryKey: ['mailQuote', documentId],
+    queryFn: () => get<MailQuote>(`/generated-documents/${documentId}/mail-quote`),
+  });
+
+  const mailingsQ = useQuery({
+    queryKey: ['mailings', documentId],
+    queryFn: () => get<{ mailings: Mailing[] }>(`/generated-documents/${documentId}/mailings`),
+  });
+
+  const send = useMutation({
+    mutationFn: () =>
+      post<Mailing & { note: string | null }>(`/generated-documents/${documentId}/mail`, {
+        to: {
+          name: to.name.trim(),
+          line1: to.line1.trim(),
+          line2: to.line2.trim() || null,
+          city: to.city.trim(),
+          state: to.state.trim().toUpperCase(),
+          postalCode: to.postalCode.trim(),
+        },
+        recipientRole: role,
+        acceptUnverifiedAddress: acceptUnverified,
+      }),
+    onSuccess: async (r) => {
+      setProblem(r.note);
+      setSuggested(null);
+      setAcceptUnverified(false);
+      await qc.invalidateQueries({ queryKey: ['mailings', documentId] });
+    },
+    onError: (e) => {
+      if (e instanceof ApiError) {
+        const d = e.details as {
+          suggested?: { line1: string; line2: string | null; city: string; state: string; postalCode: string };
+        } | undefined;
+        /*
+         * When the postal service offered a correction, show it rather than
+         * making somebody guess what was wrong. A ZIP+4 on a certified letter
+         * is one fewer reason for it to come back.
+         */
+        if (d?.suggested) {
+          setSuggested({
+            name: to.name,
+            line1: d.suggested.line1,
+            line2: d.suggested.line2 ?? '',
+            city: d.suggested.city,
+            state: d.suggested.state,
+            postalCode: d.suggested.postalCode,
+          });
+        }
+      }
+      setProblem(errorMessage(e));
+    },
+  });
+
+  const quote = quoteQ.data;
+
+  return (
+    <section className="mt-4 rounded border border-line bg-surface p-3">
+      <h3 className="mb-1 text-sm font-semibold">Post it</h3>
+
+      {quote && !quote.configured && (
+        <p className="text-sm text-ink-mute">
+          Physical mail is not configured on this server, so nothing can be sent yet.
+        </p>
+      )}
+
+      {quote?.configured && (
+        <>
+          <p className="mb-3 text-xs text-ink-mute">
+            Goes out as <strong>{quote.mailClassLabel}</strong> — {money(quote.costPerRecipientCents)}{' '}
+            per recipient, charged through at cost.
+            {quote.mailClass === 'certified_return_receipt' &&
+              ' The signed receipt is what proves service.'}
+          </p>
+
+          {!quote.mailable && quote.reason && (
+            <p className="mb-3 rounded border border-rose-300 bg-rose-50 px-2 py-1 text-sm text-rose-900">
+              {quote.reason}
+            </p>
+          )}
+
+          <div className="grid gap-2 sm:grid-cols-2">
+            <label className="text-sm sm:col-span-2">
+              <span className="mb-1 block text-ink-mute">Who is this going to?</span>
+              <select
+                className="w-full rounded border border-line bg-white px-2 py-2"
+                value={role}
+                onChange={(e) => setRole(e.target.value)}
+              >
+                <option value="owner">Owner</option>
+                <option value="contractor">Contractor</option>
+                <option value="lender">Lender</option>
+                <option value="claimant">Claimant</option>
+                <option value="other">Other</option>
+              </select>
+            </label>
+            {([
+              ['name', 'Name', 2], ['line1', 'Street address', 2], ['line2', 'Line 2', 2],
+              ['city', 'City', 1], ['state', 'State', 1], ['postalCode', 'ZIP', 1],
+            ] as const).map(([key, label, span]) => (
+              <label key={key} className={`text-sm ${span === 2 ? 'sm:col-span-2' : ''}`}>
+                <span className="mb-1 block text-ink-mute">{label}</span>
+                <input
+                  className="w-full rounded border border-line px-2 py-2"
+                  value={to[key]}
+                  maxLength={key === 'state' ? 2 : undefined}
+                  onChange={(e) => setTo({ ...to, [key]: e.target.value })}
+                />
+              </label>
+            ))}
+          </div>
+
+          {problem && (
+            <div className="mt-2 rounded border border-amber-300 bg-amber-50 px-2 py-2 text-sm text-amber-900">
+              {problem}
+              {suggested && (
+                <div className="mt-2">
+                  <div className="text-xs">The postal service suggests:</div>
+                  <div className="text-xs font-medium">
+                    {suggested.line1}
+                    {suggested.line2 ? `, ${suggested.line2}` : ''}, {suggested.city}{' '}
+                    {suggested.state} {suggested.postalCode}
+                  </div>
+                  <button
+                    className="mt-1 underline"
+                    onClick={() => {
+                      setTo(suggested);
+                      setSuggested(null);
+                      setProblem(null);
+                    }}
+                  >
+                    Use it
+                  </button>
+                </div>
+              )}
+              {/*
+                * An owner's address taken from a permit can be right while the
+                * USPS database disagrees. Refusing outright would leave this
+                * system unable to serve exactly the notices that matter most —
+                * so going ahead is possible, and it is a tick, and it is stored.
+                */}
+              <label className="mt-2 flex items-center gap-2 text-xs">
+                <input
+                  type="checkbox"
+                  checked={acceptUnverified}
+                  onChange={(e) => setAcceptUnverified(e.target.checked)}
+                />
+                <span>Post to the address as I typed it.</span>
+              </label>
+            </div>
+          )}
+
+          <button
+            className="mt-3 rounded bg-ink px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+            onClick={() => send.mutate()}
+            disabled={send.isPending || !quote.mailable}
+          >
+            {send.isPending
+              ? 'Posting…'
+              : `Post it — ${money(quote.costPerRecipientCents)}`}
+          </button>
+        </>
+      )}
+
+      {(mailingsQ.data?.mailings ?? []).length > 0 && (
+        <ul className="mt-4 space-y-2 border-t border-line pt-3">
+          {(mailingsQ.data?.mailings ?? []).map((m) => (
+            <li key={m.id} className="text-sm">
+              <div className="flex flex-wrap items-baseline gap-2">
+                <span className="font-medium">{m.recipientRoleLabel}</span>
+                <span className="text-ink-mute">
+                  {m.toName} — {m.toCity}, {m.toState}
+                </span>
+                <span
+                  className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
+                    m.status === 'delivered'
+                      ? 'bg-emerald-100 text-emerald-800'
+                      : m.status === 'returned' || m.status === 'failed'
+                        ? 'bg-rose-100 text-rose-800'
+                        : 'bg-slate-100 text-slate-700'
+                  }`}
+                >
+                  {m.status}
+                </span>
+              </div>
+              <div className="text-xs text-ink-mute">
+                {m.mailClassLabel}
+                {m.trackingNumber ? ` · ${m.trackingNumber}` : ''}
+                {m.chargedCostCents != null ? ` · ${money(m.chargedCostCents)}` : ''}
+                {m.deliveredAt ? ` · delivered ${fmtDateTime(m.deliveredAt)}` : ''}
+                {m.expectedDeliveryOn && !m.deliveredAt
+                  ? ` · expected ${m.expectedDeliveryOn}`
+                  : ''}
+              </div>
+              {/*
+                * Said plainly. On a Notice to Owner a return-to-sender is not a
+                * postal inconvenience — it is a failed service, and the window
+                * may still be open long enough to fix it.
+                */}
+              {m.status === 'returned' && (
+                <div className="text-xs text-rose-700">
+                  Came back undelivered. This did not serve — send it again to a
+                  corrected address.
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }

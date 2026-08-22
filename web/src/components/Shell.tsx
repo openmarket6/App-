@@ -25,7 +25,9 @@ const SECTIONS: NavSection[] = [
       { to: '/inspections', label: 'Inspections', badgeKey: 'inspectionsThisWeek' },
       { to: '/documents', label: 'Documents & Compliance' },
       { to: '/documents/generate', label: 'Generate a document', staffOnly: true },
-      { to: '/field', label: 'My site visits', staffOnly: true },
+      // Named for the app it will be the web half of, not for what it shows.
+      // The PM App will link into these same routes.
+      { to: '/field', label: 'PM Portal', staffOnly: true },
       { to: '/supervision', label: 'Supervision', staffOnly: true },
       { to: '/notary', label: 'Notary', staffOnly: true },
     ],

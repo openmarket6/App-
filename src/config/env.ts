@@ -73,6 +73,33 @@ const schema = z.object({
   EMAIL_FROM: z.string().email().optional(),
 
   // ---------------------------------------------------------------------------
+  // Physical mail
+  //
+  // Notices to Owner have to be SERVED, and service has to be provable. Lob
+  // posts certified mail with return receipt and reports delivery back over a
+  // webhook, which is the proof.
+  //
+  // Optional, like everything else here: unconfigured, the mail endpoints
+  // answer 503 with a sentence rather than silently recording letters that were
+  // never posted. A mailing that exists in our database and not in the postal
+  // system is worse than no mailing, because somebody will rely on it.
+  // ---------------------------------------------------------------------------
+  LOB_API_KEY: z.string().min(1).optional(),
+  LOB_WEBHOOK_SECRET: z.string().min(1).optional(),
+  /*
+   * Where the green card and the return-to-sender come back to. Held as
+   * configuration rather than derived from a company record: this is OCS's own
+   * return address, it is the same on every letter, and a per-tenant value
+   * would mean a contractor's typo could lose the proof of service.
+   */
+  MAIL_RETURN_NAME: z.string().min(1).optional(),
+  MAIL_RETURN_LINE1: z.string().min(1).optional(),
+  MAIL_RETURN_LINE2: z.string().optional(),
+  MAIL_RETURN_CITY: z.string().min(1).optional(),
+  MAIL_RETURN_STATE: z.string().length(2).optional(),
+  MAIL_RETURN_POSTAL_CODE: z.string().min(5).optional(),
+
+  // ---------------------------------------------------------------------------
   // Native authentication (the /api/auth contract the existing frontend uses)
   //
   // Two separate secrets on purpose: an access token leaked from a browser must
@@ -169,6 +196,36 @@ export const paymentsConfigured = Boolean(env.STRIPE_SECRET_KEY && env.STRIPE_WE
 
 /** True when file storage is fully configured. */
 export const storageConfigured = Boolean(env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY);
+
+/**
+ * True when mail can actually be posted AND its delivery heard back.
+ *
+ * Both halves are required. An API key with no webhook secret would let us send
+ * certified mail and never learn whether it arrived -- which is precisely the
+ * fact the certified mail was bought to establish.
+ */
+export const mailConfigured = Boolean(env.LOB_API_KEY && env.LOB_WEBHOOK_SECRET);
+
+/** OCS's own return address, or null when it has not been configured. */
+export function returnAddress(): {
+  name: string; line1: string; line2: string | null;
+  city: string; state: string; postalCode: string;
+} | null {
+  if (
+    !env.MAIL_RETURN_NAME || !env.MAIL_RETURN_LINE1 || !env.MAIL_RETURN_CITY ||
+    !env.MAIL_RETURN_STATE || !env.MAIL_RETURN_POSTAL_CODE
+  ) {
+    return null;
+  }
+  return {
+    name: env.MAIL_RETURN_NAME,
+    line1: env.MAIL_RETURN_LINE1,
+    line2: env.MAIL_RETURN_LINE2 ?? null,
+    city: env.MAIL_RETURN_CITY,
+    state: env.MAIL_RETURN_STATE.toUpperCase(),
+    postalCode: env.MAIL_RETURN_POSTAL_CODE,
+  };
+}
 
 /** True when native email/password sign-in is available. */
 export const nativeAuthConfigured = Boolean(env.AUTH_JWT_SECRET && env.AUTH_REFRESH_SECRET);

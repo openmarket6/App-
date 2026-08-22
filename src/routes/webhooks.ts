@@ -27,6 +27,9 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { withServiceContext } from '../db/tenant.js';
 import { constructWebhookEvent, isPaymentsEnabled } from '../services/stripe.js';
+import {
+  verifyWebhookSignature as verifyMailSignature, mapEventType, isMailEnabled,
+} from '../services/mail.js';
 import { enqueue } from '../jobs/queue.js';
 import { logger } from '../lib/logger.js';
 import { header } from '../lib/http-helpers.js';
@@ -131,6 +134,126 @@ export async function webhookRoutes(app: FastifyInstance): Promise<void> {
 
         logger.info({ eventId: event.id, eventType: event.type }, 'webhook accepted');
         return { received: true };
+      },
+    );
+
+    /**
+     * Lob delivery events.
+     *
+     * This is where a certified letter becomes proof. A forged `letter.delivered`
+     * would put a false proof of service in the record -- the single worst thing
+     * ocs.document_mailings could contain -- so the signature is checked over the
+     * RAW body, and the timestamp is checked too, so an old genuine event cannot
+     * be replayed later.
+     *
+     * Applied inline rather than queued, unlike the Stripe path. The work is one
+     * indexed update on one row, and the reason Stripe events are deferred -- a
+     * slow handler turning redelivery into a storm -- does not apply to a query
+     * that touches a single row by unique index.
+     */
+    instance.post(
+      '/api/webhooks/lob',
+      { config: { rateLimit: { max: 1000, timeWindow: '1 minute' } } },
+      async (req: FastifyRequest, reply) => {
+        if (!isMailEnabled()) {
+          logger.warn('received a lob webhook while mail is unconfigured');
+          reply.code(503);
+          return { error: 'mail_not_configured' };
+        }
+
+        const rawBody = req.body as Buffer;
+        if (!Buffer.isBuffer(rawBody)) {
+          reply.code(400);
+          return { error: 'expected_raw_body' };
+        }
+
+        const ok = verifyMailSignature(
+          rawBody,
+          header(req, 'lob-signature-timestamp'),
+          header(req, 'lob-signature'),
+        );
+        if (!ok) {
+          // Not recorded with its payload: a forged body is attacker-controlled
+          // content and does not belong in our storage.
+          logger.warn({ ip: req.ip }, 'rejected lob webhook with invalid signature');
+          reply.code(400);
+          return { error: 'invalid_signature' };
+        }
+
+        let event: {
+          id?: string;
+          event_type?: { id?: string } | string;
+          body?: { id?: string; tracking_number?: string | null; expected_delivery_date?: string | null };
+        };
+        try {
+          event = JSON.parse(rawBody.toString('utf8'));
+        } catch {
+          reply.code(400);
+          return { error: 'invalid_json' };
+        }
+
+        const eventType =
+          typeof event.event_type === 'string'
+            ? event.event_type
+            : (event.event_type?.id ?? '');
+        const letterId = event.body?.id;
+        if (!letterId) {
+          // Nothing to attach it to. Answered 200 so Lob stops retrying an
+          // event we will never be able to apply.
+          logger.warn({ eventType }, 'lob webhook carried no letter id');
+          return { received: true, applied: false };
+        }
+
+        const status = mapEventType(eventType);
+        const at = new Date().toISOString();
+
+        const applied = await withServiceContext(
+          async (tx) => {
+            /*
+             * Every event is appended, whether or not it moves the status.
+             * "In transit, then delivered, then returned" is a story, and the
+             * dates it turns on are exactly what a dispute asks about.
+             *
+             * The status columns use `coalesce` so a redelivered event cannot
+             * move a delivery date that is already recorded -- the first time
+             * we were told is the time that matters.
+             */
+            const row = await tx.one<{ id: string; company_id: string }>(
+              `update ocs.document_mailings
+                  set events = events || $2::jsonb,
+                      status = coalesce($3::ocs.mail_status, status),
+                      delivered_at = case when $3 = 'delivered'
+                                          then coalesce(delivered_at, now())
+                                          else delivered_at end,
+                      returned_at = case when $3 = 'returned'
+                                         then coalesce(returned_at, now())
+                                         else returned_at end,
+                      tracking_number = coalesce(tracking_number, $4),
+                      expected_delivery_on = coalesce(expected_delivery_on, $5::date)
+                where provider = 'lob' and provider_id = $1
+                returning id, company_id`,
+              [
+                letterId,
+                JSON.stringify([{ at, status: status ?? eventType, detail: eventType }]),
+                status,
+                event.body?.tracking_number ?? null,
+                event.body?.expected_delivery_date ?? null,
+              ],
+            );
+            return row;
+          },
+          { reason: 'lob_webhook' },
+        );
+
+        if (!applied) {
+          // A letter we have no row for. Worth seeing -- it means something was
+          // posted outside this system, or a row was lost.
+          logger.warn({ letterId, eventType }, 'lob event for an unknown letter');
+          return { received: true, applied: false };
+        }
+
+        logger.info({ letterId, eventType, status }, 'lob event applied');
+        return { received: true, applied: true };
       },
     );
   });
