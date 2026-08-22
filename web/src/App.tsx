@@ -9,6 +9,7 @@ import Shell from './components/Shell.tsx';
 import Dashboard from './pages/Dashboard.tsx';
 import PortalHome from './pages/PortalHome.tsx';
 import PortalFiles from './pages/PortalFiles.tsx';
+import PortalBilling from './pages/PortalBilling.tsx';
 import PortalRequestPermit from './pages/PortalRequestPermit.tsx';
 import PortalTeam from './pages/PortalTeam.tsx';
 import PortalPermit from './pages/PortalPermit.tsx';
@@ -98,6 +99,7 @@ export default function App() {
         <Route path="/files/*" element={<PortalFiles />} />
         <Route path="/request-permit" element={<PortalRequestPermit />} />
         <Route path="/account/team" element={<PortalTeam />} />
+        <Route path="/account/billing" element={<PortalBilling />} />
         <Route path="/onboarding/:clientId" element={<Onboarding />} />
         <Route path="/projects" element={<Projects />} />
 
