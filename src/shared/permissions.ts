@@ -42,6 +42,13 @@ export const CAPABILITIES = [
   'drafting:request',
   'drafting:quote',
   'drafting:produce',
+  'drafting:assign',
+  // Sealing is its own capability, but the capability is only half the gate:
+  // the act also requires a licence on file against the person doing it. An
+  // administrator holds every capability and still cannot seal, because they
+  // have no licence to stake.
+  'engineering:seal',
+  'engineering:manage',
   // Billing
   'billing:read',
   'billing:manage',
@@ -73,6 +80,40 @@ export const CAPABILITIES = [
   'portal:request_permit',
 ] as const;
 export type Capability = (typeof CAPABILITIES)[number];
+
+/**
+ * Field staff, under our licence.
+ *
+ * They log visits and photograph work; they do not file permits or touch
+ * money. The narrowness is the point: this account travels to job sites on a
+ * phone, which is the account most likely to be left unlocked in a truck.
+ */
+const SITE_SUPERVISOR_CAPS: Capability[] = [
+  'permit:read',
+  'client:read',
+  'document:read', 'document:upload',
+  'inspection:read', 'inspection:record',
+  'supervision:read', 'supervision:log',
+  'jurisdiction:read',
+];
+
+/**
+ * The staff engineer.
+ *
+ * Deliberately narrow: see the permits and documents behind the work, produce
+ * and seal deliverables, price their own jobs. Notably absent is
+ * 'drafting:assign' -- an engineer works their queue, and letting them assign
+ * work to themselves would make workload invisible to whoever manages it.
+ */
+const ENGINEER_CAPS: Capability[] = [
+  'permit:read',
+  'client:read',
+  'document:read', 'document:upload',
+  'jurisdiction:read',
+  'compliance:read',
+  'drafting:read', 'drafting:quote', 'drafting:produce',
+  'engineering:seal',
+];
 
 const VIEWER_CAPS: Capability[] = [
   'permit:read',
@@ -130,6 +171,8 @@ const CLIENT_CAPS: Capability[] = [
 export const ROLE_CAPABILITIES: Record<Role, readonly Capability[]> = {
   ADMIN: CAPABILITIES,
   PERMIT_TECH: PERMIT_TECH_CAPS,
+  SITE_SUPERVISOR: SITE_SUPERVISOR_CAPS,
+  ENGINEER: ENGINEER_CAPS,
   VIEWER: VIEWER_CAPS,
   CLIENT: CLIENT_CAPS,
   // Deliberately empty. An unauthorized account can do nothing but wait.

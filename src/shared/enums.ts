@@ -94,14 +94,26 @@ export type Platform = (typeof PLATFORMS)[number];
  * Making "no role yet" an explicit role rather than a null means no permission
  * check can accidentally treat an unauthorized account as a staff account.
  */
-export const ROLES = ['ADMIN', 'PERMIT_TECH', 'VIEWER', 'CLIENT', 'PENDING'] as const;
+export const ROLES = [
+  'ADMIN',
+  'PERMIT_TECH',
+  'SITE_SUPERVISOR',
+  'ENGINEER',
+  'VIEWER',
+  'CLIENT',
+  'PENDING',
+] as const;
 export type Role = (typeof ROLES)[number];
 
-export const STAFF_ROLES: readonly Role[] = ['ADMIN', 'PERMIT_TECH', 'VIEWER'];
+export const STAFF_ROLES: readonly Role[] = [
+  'ADMIN', 'PERMIT_TECH', 'SITE_SUPERVISOR', 'ENGINEER', 'VIEWER',
+];
 
 export const ROLE_LABELS: Record<Role, string> = {
   ADMIN: 'Administrator',
   PERMIT_TECH: 'Permit technician',
+  SITE_SUPERVISOR: 'Site supervisor / project manager',
+  ENGINEER: 'Engineer / drafter',
   VIEWER: 'Viewer',
   CLIENT: 'Contractor (client portal)',
   PENDING: 'Awaiting authorization',
@@ -110,6 +122,11 @@ export const ROLE_LABELS: Record<Role, string> = {
 export const ROLE_DESCRIPTIONS: Record<Role, string> = {
   ADMIN: 'Full access, including users, billing, credentials and connector configuration.',
   PERMIT_TECH: 'Day-to-day permit work: file, chase, log corrections, schedule inspections, review compliance.',
+  SITE_SUPERVISOR:
+    'Field staff. Attends job sites under our licence, photographs the work, and signs off each required visit.',
+  ENGINEER:
+    'Produces plan sets, calculations and other deliverables, prices their own jobs, and applies their ' +
+    'professional seal. Works an assigned queue; does not assign work.',
   VIEWER: 'Read-only across the firm. Cannot file, edit or download credentials.',
   CLIENT: 'Sees only their own company: their permits, documents, invoices and job photos.',
   PENDING: 'Signed up but not yet authorized. Sees nothing until an administrator assigns a role.',

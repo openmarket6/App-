@@ -309,3 +309,52 @@ describeIfDb('the seal', () => {
     expect(visible).toBe(0);
   });
 });
+
+/**
+ * One role list, not two.
+ *
+ * A second copy of the roles is what made ENGINEER real on the server and
+ * unselectable in the product: every endpoint enforced it, and the React app —
+ * which reads src/shared — had never heard of it. SITE_SUPERVISOR was invisible
+ * for the same reason.
+ *
+ * These tests fail the moment the two drift again.
+ */
+describe('roles are defined once', () => {
+  it('offers every role the API knows to the screen that assigns them', async () => {
+    const shared = await import('../src/shared/enums.js');
+    const domain = await import('../src/domain/capabilities.js');
+    expect([...domain.ROLES]).toEqual([...shared.ROLES]);
+  });
+
+  it('includes the two roles that were missing from the product', () => {
+    expect(ROLES).toContain('ENGINEER');
+    expect(ROLES).toContain('SITE_SUPERVISOR');
+  });
+
+  it('gives every role a label and a description', async () => {
+    // A role with no label reaches a dropdown as a blank line.
+    const { ROLE_LABELS, ROLE_DESCRIPTIONS } = await import('../src/shared/enums.js');
+    for (const role of ROLES) {
+      expect(ROLE_LABELS[role], role).toBeTruthy();
+      expect(ROLE_DESCRIPTIONS[role], role).toBeTruthy();
+    }
+  });
+
+  it('gives every role a capability set', async () => {
+    // A role missing from ROLE_CAPABILITIES throws on the first permission
+    // check rather than simply denying, so the account 500s instead of 403s.
+    const { ROLE_CAPABILITIES } = await import('../src/shared/permissions.js');
+    for (const role of ROLES) {
+      expect(ROLE_CAPABILITIES[role], role).toBeDefined();
+    }
+  });
+
+  it('lists both new roles in the catalogue an administrator picks from', async () => {
+    const { roleCatalogue } = await import('../src/domain/capabilities.js');
+    const values = roleCatalogue().map((r) => r.value);
+    expect(values).toContain('ENGINEER');
+    expect(values).toContain('SITE_SUPERVISOR');
+    expect(roleCatalogue().every((r) => r.label && r.description)).toBe(true);
+  });
+});
