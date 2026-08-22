@@ -136,11 +136,64 @@ export async function compatAdminRoutes(app: FastifyInstance): Promise<void> {
         },
       ];
 
+      /*
+       * Background work, on the page an operator actually opens.
+       *
+       * /healthz/queue already said all of this and returned 503 while eleven
+       * scheduled jobs went seventeen hours without running. It was correct and
+       * nobody was looking at it. A health endpoint nobody reads is not a
+       * failsafe, so the same facts are put here, next to the configuration an
+       * administrator came to check.
+       *
+       * `overdueSchedules` is the part /healthz/queue could not tell you: a
+       * worker can be alive, checking in happily, and still not running its
+       * schedules. A due time far in the past is the only thing that says so.
+       */
+      const background = await withServiceContext(
+        async (tx) => {
+          const worker = await tx.one<{
+            alive: boolean | null; last_seen_at: string | null; jobs_processed: string | null;
+          }>(
+            `select ocs.worker_is_alive('default') as alive,
+                    h.last_seen_at, h.jobs_processed
+               from (select 1) as _
+               left join ocs.worker_heartbeats h on h.queue = 'default'`,
+          );
+          const overdue = await tx.one<{ n: string; worst: string | null }>(
+            `select count(*)::text as n, min(next_run_at)::text as worst
+               from ocs.job_schedules
+              where is_enabled and next_run_at < now() - interval '15 minutes'`,
+          );
+          return {
+            workerAlive: worker?.alive === true,
+            lastSeenAt: worker?.last_seen_at ?? null,
+            jobsProcessed: Number(worker?.jobs_processed ?? 0),
+            overdueSchedules: Number(overdue?.n ?? 0),
+            oldestOverdueDueAt: overdue?.worst ?? null,
+          };
+        },
+        { reason: 'admin_diagnostics_background' },
+      ).catch(() => null);
+
+      const backgroundNote = !background
+        ? 'Could not read background-work status.'
+        : !background.workerAlive
+          ? background.lastSeenAt
+            ? 'The worker has stopped checking in. Municipal status checks, licence ' +
+              'reminders and notifications are not being processed.'
+            : 'No worker has ever checked in. Nothing is processing background work.'
+          : background.overdueSchedules > 0
+            ? `The worker is alive but ${background.overdueSchedules} schedule(s) are ` +
+              'overdue. It is running and not doing its work.'
+            : null;
+
       return {
         environment: env.NODE_ENV,
         connectors,
         // The count is what an operator scans first; the detail is underneath.
         unconfigured: connectors.filter((c) => !c.configured).map((c) => c.key),
+        background,
+        backgroundNote,
         roles: roleCatalogue(),
         time: new Date().toISOString(),
       };

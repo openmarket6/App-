@@ -159,11 +159,22 @@ function load(): Env {
 
   const env = parsed.data;
 
-  // Fail the boot rather than run a production deploy that is quietly degraded.
+  /*
+   * Fail the boot rather than run a production deploy that is quietly degraded.
+   *
+   * Only what EVERY process needs. This list used to include the auth secrets,
+   * which the API needs and the worker does not -- and the worker, having no
+   * HTTP surface, has no health check either. So it crashed on boot, Render
+   * reported the deploy "live" because the BUILD succeeded, and eleven
+   * scheduled jobs silently never ran for seventeen hours. Nothing anywhere
+   * said so.
+   *
+   * Per-process requirements now belong to the process. See assertApiConfig
+   * below, called by the API entrypoint. A requirement one process invented can
+   * no longer kill another.
+   */
   if (env.NODE_ENV === 'production') {
     const required: Array<[keyof Env, string]> = [
-      ['AUTH_JWT_SECRET', 'the existing frontend cannot sign in without it'],
-      ['AUTH_REFRESH_SECRET', 'sessions cannot be refreshed without it'],
       ['DATABASE_SERVICE_URL', 'background jobs and webhooks cannot run without the service role'],
       ['SUPABASE_URL', 'authentication cannot be verified'],
       ['SUPABASE_SERVICE_ROLE_KEY', 'file uploads and downloads cannot be signed'],
@@ -186,6 +197,50 @@ function load(): Env {
 }
 
 export const env = load();
+
+/**
+ * What only the API needs.
+ *
+ * Called by the API entrypoint, not at import time, so the worker -- which
+ * serves no sign-ins and issues no tokens -- is not killed by a requirement
+ * that has nothing to do with it.
+ */
+export function assertApiConfig(): void {
+  if (env.NODE_ENV !== 'production') return;
+  const required: Array<[keyof Env, string]> = [
+    ['AUTH_JWT_SECRET', 'the frontend cannot sign in without it'],
+    ['AUTH_REFRESH_SECRET', 'sessions cannot be refreshed without it'],
+  ];
+  const missing = required.filter(([k]) => !env[k]).map(([k, why]) => `  - ${k}: ${why}`);
+  if (missing.length > 0) {
+    throw new Error(`Missing required API configuration:\n${missing.join('\n')}`);
+  }
+}
+
+/**
+ * Everything optional that is NOT configured, in words.
+ *
+ * Logged once at boot by both processes. "Quietly degraded" is the failure
+ * this whole file exists to prevent, and an integration that is simply absent
+ * is the quietest degradation there is: nothing errors, the feature just never
+ * happens, and the first person to notice is a customer.
+ */
+export function missingIntegrations(): string[] {
+  const out: string[] = [];
+  if (!env.RESEND_API_KEY || !env.EMAIL_FROM) {
+    out.push('email (RESEND_API_KEY, EMAIL_FROM) — no invitations, reminders or notifications are delivered');
+  }
+  if (!env.STRIPE_SECRET_KEY || !env.STRIPE_WEBHOOK_SECRET) {
+    out.push('payments (STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET) — no subscriptions, invoices or card payments');
+  }
+  if (!env.LOB_API_KEY || !env.LOB_WEBHOOK_SECRET) {
+    out.push('physical mail (LOB_API_KEY, LOB_WEBHOOK_SECRET) — notices cannot be posted');
+  }
+  if (returnAddress() === null) {
+    out.push('return address (MAIL_RETURN_*) — certified mail cannot prove service without one');
+  }
+  return out;
+}
 
 export const corsOrigins = env.CORS_ALLOWED_ORIGINS.split(',')
   .map((o) => o.trim())

@@ -13,7 +13,7 @@ import { logger } from './lib/logger.js';
 import { closePools, usingSeparateServiceRole } from './db/pool.js';
 import { registerAllHandlers } from './jobs/handlers/index.js';
 import { startWorker, stopWorker } from './jobs/runner.js';
-import { env } from './config/env.js';
+import { env, missingIntegrations } from './config/env.js';
 
 async function main(): Promise<void> {
   // The worker has no HTTP surface, so it cannot answer /version the way the
@@ -38,6 +38,15 @@ async function main(): Promise<void> {
         'ocs_service role; without it, service-context queries will return no rows.',
     );
   }
+
+  /*
+   * State the gaps before doing any work.
+   *
+   * This process ran for seventeen hours in a state where it was not running
+   * at all, and nothing said so. A line per missing integration at boot is the
+   * cheapest possible defence against the next silent version of that.
+   */
+  for (const gap of missingIntegrations()) logger.warn({ gap }, 'NOT CONFIGURED');
 
   registerAllHandlers();
 

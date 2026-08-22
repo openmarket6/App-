@@ -14,7 +14,9 @@ import cookie from '@fastify/cookie';
 import type { FastifyCorsOptions } from '@fastify/cors';
 import { randomUUID } from 'node:crypto';
 
-import { env, corsOrigins, isProd } from './config/env.js';
+import {
+  env, corsOrigins, isProd, assertApiConfig, missingIntegrations,
+} from './config/env.js';
 import { logger } from './lib/logger.js';
 import { AppError } from './lib/errors.js';
 import { closePools, usingSeparateServiceRole } from './db/pool.js';
@@ -311,8 +313,32 @@ export async function buildServer() {
   return app;
 }
 
+/**
+ * Say out loud what is not configured.
+ *
+ * The worst production failure this system has had was not an error. It was
+ * eleven scheduled jobs never running for seventeen hours while every health
+ * check stayed green. Silence is the failure mode that costs the most, so
+ * every process states its gaps at boot, in words, where a log search will
+ * find them.
+ */
+function announceMissingIntegrations(): void {
+  const gaps = missingIntegrations();
+  if (gaps.length === 0) {
+    logger.info('all optional integrations are configured');
+    return;
+  }
+  for (const gap of gaps) logger.warn({ gap }, 'NOT CONFIGURED');
+}
+
 async function main(): Promise<void> {
+  // What only the API needs. Kept out of the shared boot check so the worker,
+  // which issues no tokens, cannot be killed by an API-only requirement.
+  assertApiConfig();
+
   const app = await buildServer();
+
+  announceMissingIntegrations();
 
   if (!usingSeparateServiceRole) {
     logger.warn(
