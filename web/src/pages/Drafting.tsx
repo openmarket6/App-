@@ -1176,10 +1176,18 @@ function DeliverDrawer({ request, onClose }: { request: DraftingRow; onClose: ()
         <div className="rounded-md bg-brand-soft px-3 py-2.5 text-[13px] text-ink-soft leading-relaxed">
           Delivering attaches these files to the permit and marks the requirement lines the ordered services are
           expected to satisfy
-          {request.satisfiesRequirementKeys.length > 0 && (
+          {/*
+            * Guarded because nothing sends this. satisfiesRequirementKeys is
+            * declared on the row and exists nowhere in the API or the schema,
+            * so it arrives undefined and `.length` threw — which, with no error
+            * boundary in the app, blanked the whole screen on opening Deliver.
+            */}
+          {(request.satisfiesRequirementKeys ?? []).length > 0 && (
             <>
               {' '}
-              — <span className="font-mono text-[12px]">{request.satisfiesRequirementKeys.join(', ')}</span>
+              — <span className="font-mono text-[12px]">
+                {(request.satisfiesRequirementKeys ?? []).join(', ')}
+              </span>
             </>
           )}
           . Where one set answers two lines, the second is an alias pointing at the same bytes and the same SHA-256.
