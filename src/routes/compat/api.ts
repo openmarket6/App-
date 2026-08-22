@@ -868,7 +868,7 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/_migration-status', async () => ({
     migrated: [
       'auth', 'dashboard', 'clients', 'permits', 'jurisdictions',
-      'supervision/visits', 'users', 'corrections', 'inspections', 'admin', 'support', 'notary', 'billing', 'drafting', 'portal',
+      'supervision/visits', 'users', 'corrections', 'inspections', 'admin', 'support', 'notary', 'billing', 'drafting', 'portal', 'projects', 'compliance',
     ],
     notMigrated: NOT_MIGRATED,
     note:
