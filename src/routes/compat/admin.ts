@@ -22,10 +22,11 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { withServiceContext } from '../../db/tenant.js';
 import { requireApiAuth, requireCapability } from './auth.js';
-import { parse } from '../../lib/http-helpers.js';
-import { forbidden } from '../../lib/errors.js';
+import { parse, clientIp } from '../../lib/http-helpers.js';
+import { forbidden, badRequest, notFound } from '../../lib/errors.js';
 import { env } from '../../config/env.js';
 import { usingSeparateServiceRole } from '../../db/pool.js';
+import { writeAudit } from '../../lib/audit.js';
 import { ROLE_CAPABILITIES, roleCatalogue } from '../../domain/capabilities.js';
 
 /** True when a configuration value is present and not blank. */
@@ -326,6 +327,234 @@ export async function compatAdminRoutes(app: FastifyInstance): Promise<void> {
           return { requeued: true, job };
         },
         { reason: 'retry_dead_job' },
+      );
+    },
+  );
+
+  /**
+   * Municipal credentials, on the path the application actually uses.
+   *
+   * These already existed under /v1/admin/*, and were unreachable. That route
+   * family authenticates against SUPABASE tokens and requires an `aal2` claim
+   * for multi-factor; the application signs in through /api/auth/login, which
+   * issues its own token carrying no such claim. So an administrator using the
+   * product could not open the screen at all -- not a permission they could be
+   * granted, a different authentication system.
+   *
+   * MFA IS NOT ENFORCED HERE, AND THAT IS A REAL GAP. These credentials pull
+   * permits under our licence in every jurisdiction we work; they deserve a
+   * second factor and the /v1 route was right to demand one. Native
+   * multi-factor does not exist yet, so this is gated on ADMIN alone. When it
+   * lands, this endpoint must require it -- the /v1 version is the model.
+   */
+  app.get(
+    '/api/admin/integrations/house-credentials',
+    { preHandler: [requireApiAuth, requireAdmin] },
+    async () =>
+      withServiceContext(
+        async (tx) => {
+          const credentials = await tx.many(
+            `select c.id, c.integration_key as "integrationKey",
+                    c.municipality_id as "municipalityId", m.name as "municipalityName",
+                    c.username, c.is_active as "isActive",
+                    c.last_verified_at as "lastVerifiedAt", c.last_error as "lastError",
+                    c.created_at as "createdAt"
+               from ocs.integration_credentials c
+               left join ocs.municipalities m on m.id = c.municipality_id
+              where c.company_id is null
+              order by c.integration_key, m.name nulls first`,
+          );
+          // Usernames and state only. The secret is never returned by any path.
+          return { credentials, total: credentials.length, mfaEnforced: false };
+        },
+        { reason: 'list_house_credentials' },
+      ),
+  );
+
+  app.put(
+    '/api/admin/integrations/house-credentials',
+    { preHandler: [requireApiAuth, requireAdmin] },
+    async (req) => {
+      const auth = req.apiAuth!;
+
+      if (!env.INTEGRATION_ENCRYPTION_KEY) {
+        throw badRequest(
+          'Credential storage is not configured on this server: INTEGRATION_ENCRYPTION_KEY is unset. ' +
+            'Without it there is nowhere safe to put a municipal password.',
+        );
+      }
+
+      const body = parse(
+        z.object({
+          integrationKey: z.string().trim().min(1).max(80),
+          /**
+           * Null covers every agency on the platform, which is the normal case
+           * for Accela: one account, many agencies.
+           */
+          municipalityId: z.string().uuid().nullable().optional(),
+          username: z.string().trim().min(1).max(200),
+          secret: z.string().min(1).max(2000),
+        }),
+        req.body,
+        'house credentials',
+      );
+
+      const municipalityId = body.municipalityId ?? null;
+
+      return withServiceContext(
+        async (tx) => {
+          if (municipalityId) {
+            const muni = await tx.one<{ id: string }>(
+              `select id from ocs.municipalities where id = $1`, [municipalityId],
+            );
+            if (!muni) throw notFound('Municipality');
+          }
+
+          /*
+           * Two conflict targets, because a house credential's uniqueness is
+           * enforced by two partial indexes rather than one constraint: NULL is
+           * never equal to NULL, so the table's own unique constraint cannot
+           * see these rows at all.
+           */
+          const row = municipalityId
+            ? await tx.one<{ id: string }>(
+                `insert into ocs.integration_credentials
+                   (company_id, municipality_id, integration_key, username, secret_encrypted, created_by)
+                 values (null, $1, $2, $3, pgp_sym_encrypt($4, $5), $6)
+                 on conflict (integration_key, municipality_id) where company_id is null
+                   do update set username = excluded.username,
+                                 secret_encrypted = excluded.secret_encrypted,
+                                 is_active = true, last_error = null
+                 returning id`,
+                [
+                  municipalityId, body.integrationKey, body.username,
+                  body.secret, env.INTEGRATION_ENCRYPTION_KEY, auth.userId,
+                ],
+              )
+            : await tx.one<{ id: string }>(
+                `insert into ocs.integration_credentials
+                   (company_id, municipality_id, integration_key, username, secret_encrypted, created_by)
+                 values (null, null, $1, $2, pgp_sym_encrypt($3, $4), $5)
+                 on conflict (integration_key) where company_id is null and municipality_id is null
+                   do update set username = excluded.username,
+                                 secret_encrypted = excluded.secret_encrypted,
+                                 is_active = true, last_error = null
+                 returning id`,
+                [
+                  body.integrationKey, body.username,
+                  body.secret, env.INTEGRATION_ENCRYPTION_KEY, auth.userId,
+                ],
+              );
+
+          await writeAudit(tx, {
+            actorUserId: auth.userId,
+            actorEmail: auth.email,
+            action: 'integration.house_credentials_stored',
+            entityType: 'integration_credential',
+            entityId: row!.id,
+            summary: `House credentials stored for ${body.integrationKey}`,
+            // The username, never the secret. An audit log holding the
+            // credential is a second copy to protect.
+            after: {
+              integrationKey: body.integrationKey,
+              municipalityId,
+              username: body.username,
+            },
+            requestId: req.id,
+            ipAddress: clientIp(req),
+          });
+
+          return {
+            id: row!.id,
+            integrationKey: body.integrationKey,
+            municipalityId,
+            isHouse: true,
+          };
+        },
+        { reason: 'store_house_credentials' },
+      );
+    },
+  );
+
+  /** Point a jurisdiction at its platform, so an adapter can be chosen. */
+  app.patch(
+    '/api/admin/jurisdictions/:id/integration',
+    { preHandler: [requireApiAuth, requireAdmin] },
+    async (req) => {
+      const auth = req.apiAuth!;
+      const { id } = parse(z.object({ id: z.string().uuid() }), req.params, 'parameters');
+      const body = parse(
+        z.object({
+          platform: z.string().trim().max(40).optional(),
+          agencyCode: z.string().trim().max(80).nullable().optional(),
+          apiEnvironment: z.string().trim().max(40).nullable().optional(),
+          apiBaseUrl: z.string().url().max(500).nullable().optional(),
+          clientId: z.string().trim().max(200).optional(),
+          clientSecret: z.string().trim().max(400).optional(),
+        }).strict(),
+        req.body,
+        'integration config',
+      );
+
+      return withServiceContext(
+        async (tx) => {
+          const before = await tx.one<{ id: string; api_config: Record<string, unknown> }>(
+            `select id, api_config from ocs.municipalities where id = $1`, [id],
+          );
+          if (!before) throw notFound('Jurisdiction');
+
+          // Merged, not replaced, so setting an agency code does not wipe a
+          // status-check mapping somebody else configured.
+          const apiConfig = { ...(before.api_config ?? {}) };
+          if (body.clientId !== undefined) apiConfig['clientId'] = body.clientId;
+          if (body.clientSecret !== undefined) apiConfig['clientSecret'] = body.clientSecret;
+
+          await tx.query(
+            `update ocs.municipalities
+                set platform = coalesce($2::ocs.permit_platform, platform),
+                    agency_code = case when $3::boolean then $4 else agency_code end,
+                    api_environment = case when $5::boolean then $6 else api_environment end,
+                    api_base_url = case when $7::boolean then $8 else api_base_url end,
+                    api_config = $9::jsonb
+              where id = $1`,
+            [
+              id, body.platform ?? null,
+              body.agencyCode !== undefined, body.agencyCode ?? null,
+              body.apiEnvironment !== undefined, body.apiEnvironment ?? null,
+              body.apiBaseUrl !== undefined, body.apiBaseUrl ?? null,
+              JSON.stringify(apiConfig),
+            ],
+          );
+
+          await writeAudit(tx, {
+            actorUserId: auth.userId,
+            actorEmail: auth.email,
+            action: 'jurisdiction.integration_configured',
+            entityType: 'municipality',
+            entityId: id,
+            summary: `Integration configured: ${body.platform ?? 'unchanged'}`,
+            // Records THAT an app secret was set, never its value.
+            after: {
+              platform: body.platform ?? null,
+              agencyCode: body.agencyCode ?? null,
+              apiEnvironment: body.apiEnvironment ?? null,
+              clientSecretSet: body.clientSecret !== undefined,
+            },
+            requestId: req.id,
+            ipAddress: clientIp(req),
+          });
+
+          return tx.one(
+            `select id, name, county, platform::text as platform,
+                    agency_code as "agencyCode", api_environment as "apiEnvironment",
+                    api_base_url as "apiBaseUrl",
+                    adapter_verified_at as "adapterVerifiedAt",
+                    status_check_enabled as "statusCheckEnabled"
+               from ocs.municipalities where id = $1`,
+            [id],
+          );
+        },
+        { reason: 'configure_jurisdiction' },
       );
     },
   );
