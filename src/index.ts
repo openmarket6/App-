@@ -35,6 +35,7 @@ import { municipalIntegrationRoutes } from './routes/municipalIntegration.js';
 import { registerAppShell, isApiPath, hasFrontend, htmlContentSecurityPolicy, shellFile } from './routes/app-shell.js';
 import { compatAuthRoutes } from './routes/compat/auth.js';
 import { compatApiRoutes } from './routes/compat/api.js';
+import { compatDetailRoutes } from './routes/compat/detail.js';
 import { compatCorrectionsRoutes } from './routes/compat/corrections.js';
 import { compatInspectionsRoutes } from './routes/compat/inspections.js';
 import { compatAdminRoutes } from './routes/compat/admin.js';
@@ -286,6 +287,7 @@ export async function buildServer() {
   await app.register(compatInvoiceRoutes);
   await app.register(compatSupervisionRoutes);
   await app.register(compatApiRoutes);
+  await app.register(compatDetailRoutes);
 
   // Last: serves the portal and intake form from this same service, so the
   // whole product is one deployment on one origin.
