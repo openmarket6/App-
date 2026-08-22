@@ -109,11 +109,15 @@ export default function Shell({ children }: { children: ReactNode }) {
   return (
     <div className="min-h-full flex">
       <aside className="w-[212px] shrink-0 bg-navy text-white flex flex-col">
-        <div className="px-4 py-4 flex items-center gap-3 border-b border-white/10">
-          <img src="/brand/1cs-mark-onnavy.png" alt="" aria-hidden className="h-8 w-auto shrink-0" />
-          <div className="min-w-0">
-            <div className="text-sm font-semibold leading-tight truncate">Contractor Solutions</div>
-          </div>
+        {/* The full lockup, sized to the rail. It already contains the
+            wordmark, so setting the name in text beside it says it twice --
+            and at 212px wide the text had nowhere to go but an ellipsis. */}
+        <div className="px-4 py-5 border-b border-white/10">
+          <img
+            src="/brand/1cs-logo-onnavy.png"
+            alt="1CS Contractor Solutions"
+            className="w-full max-w-[168px] h-auto"
+          />
         </div>
 
         <nav className="flex-1 overflow-y-auto py-3">
