@@ -340,3 +340,189 @@ describeIfDb('recording what OCS itself holds', () => {
     }
   });
 });
+
+/**
+ * The verdict: does the supervision record support our licence being on this
+ * permit? The question the whole area exists to answer, and the one somebody
+ * will eventually ask under oath.
+ *
+ * It answered 500 every single time it was ever called. The query referenced
+ * e.qualifier_id twice and joined ocs.qualifiers for max_active_engagements —
+ * supervision_engagements has no qualifier_id column, and ocs.qualifiers has no
+ * capacity column, because that table is the CONTRACTOR's own qualifying
+ * agents. A different thing with the same word on it. Invalid SQL fails at
+ * parse time, so this was broken with data and without it, and nobody found it
+ * because the tables were empty.
+ */
+describeIfDb('the supervision verdict', () => {
+  const ADMIN = { email: 'vd-admin@test.invalid', password: 'VerdictAdmin2026!' };
+  let permitId = '';
+  let tradeId = '';
+
+  beforeAll(async () => {
+    await applyMigrations();
+    const c = client(ownerUrl!);
+    await c.connect();
+    try {
+      await c.query('create extension if not exists pgcrypto');
+      await c.query('delete from ocs.companies where id = $1', [ALPHA]);
+      await c.query(`insert into ocs.companies (id, name) values ($1,'Alpha Roofing LLC')`, [ALPHA]);
+      await c.query('delete from ocs.app_users where email = $1', [ADMIN.email]);
+      await c.query(
+        `insert into ocs.app_users (email, name, app_role, is_active, password_hash)
+         values ($1,'Admin','ADMIN',true, crypt($2, gen_salt('bf',10)))`,
+        [ADMIN.email, ADMIN.password],
+      );
+      tradeId = (await c.query('select id from ocs.trades limit 1')).rows[0].id;
+      const proj = (await c.query(
+        `insert into ocs.projects (company_id, name) values ($1,'Verdict Site') returning id`,
+        [ALPHA],
+      )).rows[0].id;
+      permitId = (await c.query(
+        `insert into ocs.permits (company_id, project_id, permit_type, status)
+         values ($1,$2,'ROOFING','draft') returning id`,
+        [ALPHA, proj],
+      )).rows[0].id;
+    } finally {
+      await c.end();
+    }
+  });
+
+  beforeEach(async () => {
+    const c = client(ownerUrl!);
+    await c.connect();
+    try {
+      await c.query('delete from ocs.supervision_engagements where company_id = $1', [ALPHA]);
+      await c.query('delete from ocs.service_licenses');
+    } finally {
+      await c.end();
+    }
+  });
+
+  const tok = async (app: Awaited<ReturnType<typeof server>>) => {
+    const res = await app.inject({ method: 'POST', url: '/api/auth/login', payload: ADMIN });
+    expect(res.statusCode).toBe(200);
+    return JSON.parse(res.body).accessToken as string;
+  };
+
+  const verdict = (app: Awaited<ReturnType<typeof server>>, t: string) =>
+    app.inject({
+      method: 'GET', url: `/api/supervision/verdict/${permitId}`,
+      headers: { authorization: `Bearer ${t}` },
+    });
+
+  it('answers at all when there is no engagement', async () => {
+    // The 500 happened here too: a bad column reference fails at parse time,
+    // so an empty database did not save it.
+    const app = await server();
+    try {
+      const res = await verdict(app, await tok(app));
+      expect(res.statusCode, res.body).toBe(200);
+      expect(JSON.parse(res.body).defensible).toBe(false);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('answers once an engagement exists', async () => {
+    const app = await server();
+    try {
+      const t = await tok(app);
+      await app.inject({
+        method: 'POST', url: '/api/supervision/licenses',
+        headers: { authorization: `Bearer ${t}` },
+        payload: {
+          tradeId, licenseNumber: 'CGC1520002', qualifierName: 'Ryan Q',
+          expiresOn: '2030-01-01', maxActiveEngagements: 25,
+        },
+      });
+      const opened = await app.inject({
+        method: 'POST', url: '/api/supervision/engagements',
+        headers: { authorization: `Bearer ${t}` },
+        payload: { permitId, tradeId },
+      });
+      expect(opened.statusCode, opened.body).toBe(201);
+
+      const res = await verdict(app, t);
+      expect(res.statusCode, res.body).toBe(200);
+      expect(JSON.parse(res.body).permitId).toBe(permitId);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('records which licence is carrying the engagement', async () => {
+    /*
+     * Not bookkeeping. The verdict asks how many other jobs sit on this licence,
+     * and an engagement that only knows a licence existed at the time cannot
+     * answer that — nor say which one lapsed when one does.
+     */
+    const app = await server();
+    try {
+      const t = await tok(app);
+      await app.inject({
+        method: 'POST', url: '/api/supervision/licenses',
+        headers: { authorization: `Bearer ${t}` },
+        payload: {
+          tradeId, licenseNumber: 'CGC1520003', qualifierName: 'Ryan Q',
+          expiresOn: '2030-01-01',
+        },
+      });
+      const opened = await app.inject({
+        method: 'POST', url: '/api/supervision/engagements',
+        headers: { authorization: `Bearer ${t}` },
+        payload: { permitId, tradeId },
+      });
+      expect(JSON.parse(opened.body).serviceLicenseId).toBeTruthy();
+
+      const c = client(ownerUrl!);
+      await c.connect();
+      try {
+        const row = await c.query(
+          'select service_license_id from ocs.supervision_engagements where permit_id = $1',
+          [permitId],
+        );
+        expect(row.rows[0].service_license_id).toBeTruthy();
+      } finally {
+        await c.end();
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('picks the licence expiring soonest', async () => {
+    // The binding constraint. Choosing it means a renewal problem surfaces on
+    // the first job rather than the last.
+    const app = await server();
+    try {
+      const t = await tok(app);
+      for (const [num, exp] of [['CGC-LATE', '2035-01-01'], ['CGC-SOON', '2027-01-01']]) {
+        await app.inject({
+          method: 'POST', url: '/api/supervision/licenses',
+          headers: { authorization: `Bearer ${t}` },
+          payload: { tradeId, licenseNumber: num, qualifierName: 'Ryan Q', expiresOn: exp },
+        });
+      }
+      const opened = await app.inject({
+        method: 'POST', url: '/api/supervision/engagements',
+        headers: { authorization: `Bearer ${t}` },
+        payload: { permitId, tradeId },
+      });
+      const chosen = JSON.parse(opened.body).serviceLicenseId;
+
+      const c = client(ownerUrl!);
+      await c.connect();
+      try {
+        const row = await c.query(
+          'select license_number from ocs.service_licenses where id = $1', [chosen],
+        );
+        expect(row.rows[0].license_number).toBe('CGC-SOON');
+      } finally {
+        await c.end();
+      }
+    } finally {
+      await app.close();
+    }
+  });
+});

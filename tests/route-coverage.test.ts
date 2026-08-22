@@ -48,15 +48,6 @@ const KNOWN_GAPS: Record<string, string> = {
     'signed URLs, and rule 3 of services/storage.ts is that bytes never stream ' +
     'through this API. DocumentLink should fetch /documents/:id/download and ' +
     'use the URL it returns.',
-  'PATCH /api/jurisdictions/:id':
-    'Recording a portal correction. Two of the five fields it sends have no ' +
-    'column: automationApproved maps onto adapter_verified_at/_by and ' +
-    'tosReviewNote onto adapter_notes, but portalUrlConfidence has nowhere to ' +
-    'go. Needs the confidence column, or a decision to drop it — not a route ' +
-    'that silently discards a field a coordinator filled in.',
-  'POST /api/portal/folders/:id/upload':
-    'Portal folder upload — both the Files screen and the permit page use it. ' +
-    'Not written yet.',
 };
 
 /*

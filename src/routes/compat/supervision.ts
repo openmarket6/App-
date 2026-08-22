@@ -257,17 +257,34 @@ export async function compatSupervisionRoutes(app: FastifyInstance): Promise<voi
           [permitId],
         );
 
+        /*
+         * Capacity and expiry come from the SERVICE LICENCE — OCS's own — not
+         * from ocs.qualifiers.
+         *
+         * This query referenced e.qualifier_id twice and joined ocs.qualifiers
+         * for max_active_engagements. supervision_engagements has no
+         * qualifier_id column and ocs.qualifiers has no capacity column: that
+         * table is the CONTRACTOR's own qualifying agents, a different thing
+         * with the same word on it. The statement was invalid SQL, so this
+         * endpoint answered 500 every time it was ever called — including with
+         * no data, because a bad column reference fails at parse time.
+         *
+         * The question it answers is whether OUR licence can defensibly sit on
+         * this permit, so the capacity that matters is that licence's, and the
+         * engagements counted against it are the ones sharing it.
+         */
         const engagement = await tx.one<{
           supervisor_id: string | null; license_expires_on: string | null;
           max_active: number | null; active_count: string;
         }>(
           `select e.supervisor_id,
                   l.expires_on as license_expires_on,
-                  q.max_active_engagements as max_active,
+                  l.max_active_engagements as max_active,
                   (select count(*) from ocs.supervision_engagements e2
-                    where e2.qualifier_id = e.qualifier_id and e2.status = 'active')::text as active_count
+                    where e2.service_license_id = e.service_license_id
+                      and e2.service_license_id is not null
+                      and e2.status = 'active')::text as active_count
              from ocs.supervision_engagements e
-             left join ocs.qualifiers q on q.id = e.qualifier_id
              left join ocs.service_licenses l on l.id = e.service_license_id
             where e.permit_id = $1
             order by e.created_at desc limit 1`,
@@ -1119,12 +1136,25 @@ export async function compatSupervisionRoutes(app: FastifyInstance): Promise<voi
            * qualify is a job we cannot take, and saying so now is far cheaper
            * than saying it after a contractor has scheduled work.
            */
-          const licensed = await tx.one<{ n: string }>(
-            `select count(*)::text as n from ocs.service_licenses
+          /*
+           * The licence is not just counted, it is CHOSEN and recorded on the
+           * engagement. The verdict later asks which licence is carrying this
+           * permit and how many other jobs are on it; an engagement that only
+           * knows a licence existed at the time cannot answer either.
+           *
+           * The one expiring soonest is picked deliberately: it is the binding
+           * constraint, and choosing it means a renewal problem surfaces on the
+           * first job rather than the last.
+           */
+          const licence = await tx.one<{ id: string }>(
+            `select id from ocs.service_licenses
               where trade_id = $1 and deleted_at is null and status = 'active'
-                and (expires_on is null or expires_on >= current_date)`,
+                and (expires_on is null or expires_on >= current_date)
+              order by expires_on asc nulls last
+              limit 1`,
             [tradeId],
           );
+          const licensed = { n: licence ? '1' : '0' };
           if (Number(licensed?.n ?? 0) === 0) {
             throw conflict(
               'One Contractor Solutions does not currently hold an active licence for ' +
@@ -1135,13 +1165,15 @@ export async function compatSupervisionRoutes(app: FastifyInstance): Promise<voi
 
           const row = await tx.one<{ id: string; engagement_number: number }>(
             `insert into ocs.supervision_engagements
-               (company_id, trade_id, project_id, permit_id, site_address, site_city,
-                site_county, scope_summary, estimated_value_cents,
-                requested_start_date, expected_completion_date, requested_by, status)
-             values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::date,$11::date,$12,'requested')
+               (company_id, trade_id, service_license_id, project_id, permit_id,
+                site_address, site_city, site_county, scope_summary,
+                estimated_value_cents, requested_start_date,
+                expected_completion_date, requested_by, status)
+             values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::date,$12::date,$13,'requested')
              returning id, engagement_number`,
             [
-              companyId, tradeId, body.projectId ?? null, body.permitId ?? null,
+              companyId, tradeId, licence!.id, body.projectId ?? null,
+              body.permitId ?? null,
               body.siteAddress ?? null, body.siteCity ?? null, body.siteCounty ?? null,
               body.scopeSummary ?? null, body.estimatedValueCents ?? null,
               body.requestedStartDate ?? null, body.expectedCompletionDate ?? null,
@@ -1158,7 +1190,10 @@ export async function compatSupervisionRoutes(app: FastifyInstance): Promise<voi
             entityType: 'supervision_engagement',
             entityId: row.id,
             summary: `Supervision engagement #${row.engagement_number} opened`,
-            after: { tradeId, permitId: body.permitId ?? null, projectId: body.projectId ?? null },
+            after: {
+              tradeId, serviceLicenseId: licence!.id,
+              permitId: body.permitId ?? null, projectId: body.projectId ?? null,
+            },
             requestId: req.id,
             ipAddress: clientIp(req),
             userAgent: userAgent(req),
@@ -1169,6 +1204,7 @@ export async function compatSupervisionRoutes(app: FastifyInstance): Promise<voi
             engagementNumber: row.engagement_number,
             clientId: companyId,
             tradeId,
+            serviceLicenseId: licence!.id,
             projectId: body.projectId ?? null,
             permitId: body.permitId ?? null,
             status: 'requested',
