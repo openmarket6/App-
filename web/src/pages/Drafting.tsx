@@ -19,7 +19,12 @@ import type {
   DocumentUploadResponse,
   DraftingListResponse,
   DraftingRow,
+  Engineer,
+  EngineerListResponse,
+  EngineeringOrder,
+  EngineeringQueueResponse,
   ProjectListResponse,
+  SealListResponse,
   UserListResponse,
 } from '../lib/api-shapes.ts';
 import DataTable, { type Column } from '../components/DataTable.tsx';
@@ -37,6 +42,14 @@ import { LoadingPanel } from '../components/Spinner.tsx';
  * requirement lines it was ordered to satisfy. So the board is organised
  * around getting work to DELIVERED, and every card carries the server's own
  * `nextStep` rather than a status re-interpreted here.
+ *
+ * THREE VIEWS, ONE PAGE. The board answers "where is this job?". It does not
+ * answer the two questions the engineering side of the business actually asks:
+ * whose desk is it on, and who put their licence on the drawing. Those have
+ * their own endpoints (/engineering/*) and their own tabs here. They are tabs
+ * rather than a separate page because they are the same orders seen from a
+ * different chair -- splitting them would mean the assignment you make in one
+ * place silently changes the board in another.
  */
 
 const BOARD: DraftingStatus[] = [
@@ -73,8 +86,17 @@ const STATUS_CLASS: Record<DraftingStatus, string> = {
   CANCELLED: 'badge-gray',
 };
 
+type StaffTab = 'queue' | 'engineers' | 'seals';
+
+const TAB_LABELS: Record<StaffTab, string> = {
+  queue: 'Queue',
+  engineers: 'Engineers',
+  seals: 'Seals',
+};
+
 export default function Drafting() {
   const { user, isStaff } = useAuth();
+  const [tab, setTab] = useState<StaffTab>('queue');
   const [requestOpen, setRequestOpen] = useState(false);
   const [quoting, setQuoting] = useState<DraftingRow | null>(null);
   const [delivering, setDelivering] = useState<DraftingRow | null>(null);
@@ -82,6 +104,8 @@ export default function Drafting() {
   const canQuote = !!user && can(user.role, 'drafting:quote');
   const canProduce = !!user && can(user.role, 'drafting:produce');
   const canRequest = !!user && (can(user.role, 'drafting:request') || can(user.role, 'portal:request_drafting'));
+  const canSeeEngineers = !!user && can(user.role, 'drafting:read');
+  const canSeeSeals = !!user && can(user.role, 'document:read');
 
   const q = useQuery({
     queryKey: ['drafting'],
@@ -128,7 +152,33 @@ export default function Drafting() {
         )}
       </div>
 
-      {isStaff && (
+      {isStaff && (canSeeEngineers || canSeeSeals) && (
+        <div className="flex items-center gap-1 border-b border-line" role="tablist">
+          {(['queue', 'engineers', 'seals'] as StaffTab[])
+            .filter((t) => t === 'queue' || (t === 'engineers' ? canSeeEngineers : canSeeSeals))
+            .map((t) => (
+              <button
+                key={t}
+                type="button"
+                role="tab"
+                aria-selected={tab === t}
+                onClick={() => setTab(t)}
+                className={
+                  tab === t
+                    ? 'px-3 py-2 text-sm font-medium text-brand border-b-2 border-brand -mb-px'
+                    : 'px-3 py-2 text-sm font-medium text-ink-soft border-b-2 border-transparent hover:text-ink'
+                }
+              >
+                {TAB_LABELS[t]}
+              </button>
+            ))}
+        </div>
+      )}
+
+      {isStaff && tab === 'engineers' && <EngineersPanel />}
+      {isStaff && tab === 'seals' && <SealsPanel />}
+
+      {isStaff && tab === 'queue' && (
         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
           <KpiCard label="Open requests" value={open.length} hint="Everything not delivered or cancelled." />
           <KpiCard
@@ -151,10 +201,12 @@ export default function Drafting() {
         </div>
       )}
 
-      {q.isLoading && <LoadingPanel label="Loading the drafting queue…" rows={5} />}
-      {q.isError && <ErrorState error={q.error} onRetry={() => void q.refetch()} title="Could not load drafting requests" />}
+      {tab === 'queue' && q.isLoading && <LoadingPanel label="Loading the drafting queue…" rows={5} />}
+      {tab === 'queue' && q.isError && (
+        <ErrorState error={q.error} onRetry={() => void q.refetch()} title="Could not load drafting requests" />
+      )}
 
-      {!q.isLoading && !q.isError && requests.length === 0 && (
+      {tab === 'queue' && !q.isLoading && !q.isError && requests.length === 0 && (
         <div className="card">
           <EmptyState
             title="No drafting requests yet"
@@ -175,7 +227,7 @@ export default function Drafting() {
       )}
 
       {/* --- staff board ---------------------------------------------------- */}
-      {isStaff && requests.length > 0 && (
+      {isStaff && tab === 'queue' && requests.length > 0 && (
         <div className="overflow-x-auto pb-2">
           <div className="flex gap-3 min-w-max">
             {columns.map((status) => {
@@ -218,6 +270,378 @@ export default function Drafting() {
       {quoting && canQuote && <QuoteDrawer request={quoting} onClose={() => setQuoting(null)} />}
       {delivering && canProduce && <DeliverDrawer request={delivering} onClose={() => setDelivering(null)} />}
     </div>
+  );
+}
+
+// --------------------------------------------------------------------------
+
+/**
+ * Who can seal, and what is on their desk.
+ *
+ * The licence column is the point. An engineer whose licence has lapsed can
+ * still draw, but the database refuses their seal -- so assigning work to them
+ * does not fail at assignment, it fails weeks later at the last step with the
+ * permit due. The roster surfaces that before it costs anything, and the
+ * server refuses the assignment outright with the same reasoning.
+ */
+function EngineersPanel() {
+  const { user } = useAuth();
+  const qc = useQueryClient();
+  const [selected, setSelected] = useState<Engineer | null>(null);
+
+  const canAssign = !!user && can(user.role, 'drafting:assign');
+  const canSeeQueue = !!user && can(user.role, 'drafting:produce');
+
+  const engineersQ = useQuery({
+    queryKey: ['engineering', 'engineers'],
+    queryFn: () => get<EngineerListResponse>('/engineering/engineers'),
+  });
+
+  const engineers = engineersQ.data?.engineers ?? [];
+
+  // Two queues, deliberately separate: the selected engineer's desk, and the
+  // work nobody owns. The second is the one that goes unnoticed.
+  const deskQ = useQuery({
+    queryKey: ['engineering', 'queue', selected?.id],
+    queryFn: () => get<EngineeringQueueResponse>(`/engineering/queue?engineerId=${selected!.id}`),
+    enabled: canSeeQueue && !!selected,
+  });
+
+  const unassignedQ = useQuery({
+    queryKey: ['engineering', 'queue', 'unassigned'],
+    queryFn: () =>
+      get<EngineeringQueueResponse>('/engineering/queue?includeUnassigned=true'),
+    enabled: canSeeQueue,
+  });
+
+  const assign = useMutation({
+    mutationFn: ({ orderId, engineerId }: { orderId: string; engineerId: string | null }) =>
+      post(`/engineering/orders/${orderId}/assign`, { engineerId }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['engineering'] });
+      void qc.invalidateQueries({ queryKey: ['drafting'] });
+    },
+  });
+
+  const columns: Array<Column<Engineer>> = useMemo(
+    () => [
+      {
+        key: 'name',
+        header: 'Engineer',
+        sortValue: (e) => e.displayName,
+        render: (e) => (
+          <div className="min-w-[170px]">
+            <div className="font-medium">{e.displayName}</div>
+            <div className="text-[12px] text-ink-mute">
+              {e.disciplines?.length ? e.disciplines.join(', ') : 'No disciplines recorded'}
+            </div>
+          </div>
+        ),
+      },
+      {
+        key: 'licence',
+        header: 'Licence',
+        sortValue: (e) => e.licenseNumber,
+        render: (e) => (
+          <div className="text-[13px]">
+            <span className="font-mono">{e.licenseNumber}</span>
+            <span className="text-ink-mute">
+              {' '}
+              {e.licenseType} · {e.licenseState}
+            </span>
+          </div>
+        ),
+      },
+      {
+        key: 'expires',
+        header: 'Licence expires',
+        sortValue: (e) => e.licenseExpiresOn ?? null,
+        render: (e) =>
+          e.licenseExpired ? (
+            <span className="badge-red" title="An expired licence cannot seal a drawing.">
+              Expired {fmtDate(e.licenseExpiresOn)}
+            </span>
+          ) : (
+            <span className="text-[13px]">{fmtDate(e.licenseExpiresOn)}</span>
+          ),
+      },
+      {
+        key: 'load',
+        header: 'Open orders',
+        align: 'right',
+        sortValue: (e) => e.activeOrders,
+        render: (e) => {
+          const over = e.maxActiveOrders != null && e.activeOrders > e.maxActiveOrders;
+          return (
+            <span className={over ? 'badge-amber tabular-nums' : 'tabular-nums text-[13px]'}>
+              {e.activeOrders}
+              {e.maxActiveOrders != null ? ` / ${e.maxActiveOrders}` : ''}
+            </span>
+          );
+        },
+      },
+      {
+        key: 'active',
+        header: '',
+        render: (e) => (e.isActive ? null : <span className="badge-gray">Inactive</span>),
+      },
+    ],
+    [],
+  );
+
+  return (
+    <div className="space-y-5">
+      <DataTable
+        columns={columns}
+        rows={engineers}
+        rowKey={(e) => e.id}
+        loading={engineersQ.isLoading}
+        error={engineersQ.error}
+        onRetry={() => void engineersQ.refetch()}
+        onRowClick={canSeeQueue ? (e) => setSelected(e) : undefined}
+        rowClassName={(e) => (selected?.id === e.id ? 'bg-brand-soft/60' : '')}
+        empty={
+          <EmptyState
+            title="No engineers on file"
+            hint="An engineer of record needs a licence number, state and expiry date recorded before they can be assigned work or seal a drawing."
+          />
+        }
+      />
+
+      {canSeeQueue && selected && (
+        <OrderQueue
+          title={`On ${selected.displayName}'s desk`}
+          query={deskQ}
+          emptyHint="Nothing assigned. Pick something up from the unassigned list below."
+          onClear={() => setSelected(null)}
+          {...(canAssign
+            ? {
+                actionLabel: 'Unassign',
+                onAction: (o: EngineeringOrder) =>
+                  assign.mutate({ orderId: o.id, engineerId: null }),
+              }
+            : {})}
+        />
+      )}
+
+      {canSeeQueue && (
+        <OrderQueue
+          title="Nobody's desk"
+          query={unassignedQ}
+          emptyHint="Every open order has an engineer of record."
+          filter={(o) => o.engineerId === null}
+          {...(canAssign && selected
+            ? {
+                actionLabel: `Assign to ${selected.displayName}`,
+                onAction: (o: EngineeringOrder) =>
+                  assign.mutate({ orderId: o.id, engineerId: selected.id }),
+              }
+            : {})}
+        />
+      )}
+
+      {assign.isError && (
+        <div className="card card-pad text-sm text-danger">{errorMessage(assign.error)}</div>
+      )}
+    </div>
+  );
+}
+
+/** One queue of orders. Overdue first, because that is the order it arrives in. */
+function OrderQueue({
+  title,
+  query,
+  emptyHint,
+  filter,
+  actionLabel,
+  onAction,
+  onClear,
+}: {
+  title: string;
+  query: { data?: EngineeringQueueResponse; isLoading: boolean; error: unknown; refetch: () => unknown };
+  emptyHint: string;
+  filter?: (o: EngineeringOrder) => boolean;
+  actionLabel?: string;
+  onAction?: (o: EngineeringOrder) => void;
+  onClear?: () => void;
+}) {
+  const all = query.data?.orders ?? [];
+  const orders = filter ? all.filter(filter) : all;
+
+  const columns: Array<Column<EngineeringOrder>> = useMemo(
+    () => [
+      {
+        key: 'order',
+        header: 'Order',
+        sortValue: (o) => o.orderNumber ?? null,
+        render: (o) => (
+          <div className="min-w-[200px]">
+            <div className="font-medium">{o.title}</div>
+            <div className="text-[12px] text-ink-mute">
+              {o.orderNumber != null ? `#${o.orderNumber}` : 'No order number'}
+              {o.currentRevision ? ` · rev ${o.currentRevision}` : ''}
+            </div>
+          </div>
+        ),
+      },
+      {
+        key: 'due',
+        header: 'Due',
+        sortValue: (o) => o.dueDate ?? null,
+        render: (o) =>
+          o.overdue ? (
+            <span className="badge-red">Overdue {fmtDate(o.dueDate)}</span>
+          ) : (
+            <span className="text-[13px]">{o.dueDate ? fmtDate(o.dueDate) : '—'}</span>
+          ),
+      },
+      {
+        key: 'engineer',
+        header: 'Engineer of record',
+        sortValue: (o) => o.engineerName ?? null,
+        render: (o) =>
+          o.engineerName ? (
+            <span className="text-[13px]">{o.engineerName}</span>
+          ) : (
+            <span className="badge-amber">Unassigned</span>
+          ),
+      },
+      {
+        key: 'quote',
+        header: 'Quote',
+        render: (o) => (
+          <span className="text-[13px]">
+            {o.quotedCents != null ? formatCents(o.quotedCents) : '—'}
+            <span className="text-ink-mute"> · {o.quoteStatus}</span>
+          </span>
+        ),
+      },
+      ...(onAction && actionLabel
+        ? [
+            {
+              key: 'action',
+              header: '',
+              align: 'right' as const,
+              render: (o: EngineeringOrder) => (
+                <button type="button" className="btn-ghost" onClick={() => onAction(o)}>
+                  {actionLabel}
+                </button>
+              ),
+            },
+          ]
+        : []),
+    ],
+    [actionLabel, onAction],
+  );
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <h2 className="label">
+          {title}
+          {query.data ? ` · ${orders.length}` : ''}
+          {query.data?.overdueCount ? ` · ${query.data.overdueCount} overdue` : ''}
+        </h2>
+        {onClear && (
+          <button type="button" className="text-[12px] link" onClick={onClear}>
+            Clear selection
+          </button>
+        )}
+      </div>
+      <DataTable
+        columns={columns}
+        rows={orders}
+        rowKey={(o) => o.id}
+        dense
+        loading={query.isLoading}
+        error={query.error}
+        onRetry={() => void query.refetch()}
+        empty={<EmptyState title="Nothing here" hint={emptyHint} />}
+      />
+    </div>
+  );
+}
+
+/**
+ * The seal register.
+ *
+ * Read-only on purpose. A seal is recorded at the moment an engineer takes
+ * responsibility for a specific version of a drawing, which happens against
+ * that document -- not from a list of past seals. What this view is for is the
+ * question asked afterwards, usually by somebody who is not us: who sealed
+ * this, under which licence, and on what date.
+ */
+function SealsPanel() {
+  const sealsQ = useQuery({
+    queryKey: ['engineering', 'seals'],
+    queryFn: () => get<SealListResponse>('/engineering/seals'),
+  });
+
+  const columns: Array<Column<SealListResponse['seals'][number]>> = useMemo(
+    () => [
+      {
+        key: 'document',
+        header: 'Drawing',
+        sortValue: (s) => s.documentName ?? s.documentId,
+        render: (s) => (
+          <div className="min-w-[200px]">
+            <div className="font-medium">{s.documentName ?? 'Untitled document'}</div>
+            {s.sealReference && (
+              <div className="text-[12px] text-ink-mute font-mono">{s.sealReference}</div>
+            )}
+          </div>
+        ),
+      },
+      {
+        key: 'engineer',
+        header: 'Sealed by',
+        sortValue: (s) => s.sealedByName,
+        render: (s) => <span className="text-[13px]">{s.sealedByName}</span>,
+      },
+      {
+        key: 'licence',
+        header: 'Licence at time of seal',
+        render: (s) => (
+          <span className="text-[13px]">
+            <span className="font-mono">{s.licenseNumber}</span>
+            <span className="text-ink-mute">
+              {' '}
+              {s.licenseType} · {s.licenseState}
+            </span>
+          </span>
+        ),
+      },
+      {
+        key: 'sealedAt',
+        header: 'Sealed',
+        sortValue: (s) => s.sealedAt,
+        render: (s) => <span className="text-[13px]">{fmtDateTime(s.sealedAt)}</span>,
+      },
+      {
+        key: 'note',
+        header: 'Note',
+        render: (s) => <span className="text-[12px] text-ink-mute">{s.note ?? ''}</span>,
+      },
+    ],
+    [],
+  );
+
+  return (
+    <DataTable
+      columns={columns}
+      rows={sealsQ.data?.seals ?? []}
+      rowKey={(s) => s.id}
+      loading={sealsQ.isLoading}
+      error={sealsQ.error}
+      onRetry={() => void sealsQ.refetch()}
+      initialSort={{ key: 'sealedAt', dir: 'desc' }}
+      empty={
+        <EmptyState
+          title="No drawings sealed yet"
+          hint="A seal is recorded against a specific version of a document at the moment an engineer takes responsibility for it. Once recorded it cannot be rewritten — only its note and reference may be amended."
+        />
+      }
+    />
   );
 }
 
