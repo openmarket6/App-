@@ -104,7 +104,8 @@ export async function compatDetailRoutes(app: FastifyInstance): Promise<void> {
 
         const client = await tx.one<Record<string, unknown>>(
           `select c.id, c.name, c.legal_name as "legalName",
-                  c.license_number as "licenseNumber", c.status::text as status
+                  c.license_number as "licenseNumber", c.status::text as status,
+                  c.service_line::text as "serviceLine"
              from ocs.companies c
             where c.id = $1 and c.deleted_at is null`,
           [permit['clientId']],
@@ -115,7 +116,7 @@ export async function compatDetailRoutes(app: FastifyInstance): Promise<void> {
                   m.county, m.state, m.portal_url as "portalUrl",
                   m.platform::text as platform,
                   m.status_check_enabled as "statusCheckEnabled",
-                  m.adapter_verified_at,
+                  m.adapter_verified_at as "adapterVerifiedAt",
                   ocs.county_is_hvhz(m.county) as hvhz
              from ocs.municipalities m
             where m.id = $1`,
@@ -223,8 +224,22 @@ export async function compatDetailRoutes(app: FastifyInstance): Promise<void> {
             ...permit,
             stage,
             trade: toTrade(permit['permitType'] as string),
-            serviceLine: 'EXPEDITING',
-            correctionCycles: corrections.length,
+            /*
+             * The contractor's line, read from the contractor.
+             *
+             * This was the literal 'EXPEDITING', and the detail screen prints
+             * it as a "Service line" fact. On the managed line our licence is
+             * the one on this permit and supervision is a legal obligation, so
+             * the permit's own screen was giving the wrong answer to the
+             * question the whole arrangement turns on.
+             */
+            serviceLine: client?.['serviceLine'] ?? 'EXPEDITING',
+            /*
+             * Distinct cycles rather than rows -- the same number today, since
+             * apply_correction_effects gives every correction its own cycle,
+             * but it matches how the list computes it and how the field reads.
+             */
+            correctionCycles: new Set(corrections.map((c) => c['cycle'])).size,
             daysInStage: daysInStage(permit['updatedAt'] as string),
             jurisdictionName: jurisdiction?.['name'] ?? null,
             projectName: project?.['name'] ?? null,

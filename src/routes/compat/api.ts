@@ -136,8 +136,8 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
         permit_number: string | null; permit_type: string; status: string;
         updated_at: string; expires_at: string | null; issued_at: string | null;
         municipality_id: string | null; municipality_name: string | null;
-        platform: string | null; status_check_enabled: boolean;
-        adapter_verified_at: string | null;
+        platform: string | null; statusCheckEnabled: boolean;
+        adapterVerifiedAt: string | null;
         project_name: string | null; project_address: string | null;
         client_name: string | null;
       }>(
@@ -145,7 +145,8 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
                 p.status::text, p.updated_at, p.expires_at, p.issued_at,
                 p.municipality_id,
                 m.name as municipality_name, m.platform::text as platform,
-                m.status_check_enabled, m.adapter_verified_at,
+                m.status_check_enabled as "statusCheckEnabled",
+                m.adapter_verified_at as "adapterVerifiedAt",
                 pr.name as project_name, pr.address_line1 as project_address,
                 c.name as client_name
            from ocs.permits p
@@ -357,19 +358,35 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
 
     return scoped(req, async (tx, companyId) => {
       const rows = await tx.many<{
-        id: string; status: string; permit_type: string; updated_at: string;
-        expires_at: string | null; [k: string]: unknown;
+        id: string; status: string; permitType: string; updatedAt: string;
+        expiresAt: string | null; serviceLine: 'EXPEDITING' | 'MANAGED_LICENSE';
+        correctionCycles: number; [k: string]: unknown;
       }>(
         `select p.id, p.company_id as "clientId", p.project_id as "projectId",
                 p.permit_number as "agencyRecordId", p.permit_type as "permitType",
-                p.status::text, p.scope_of_work as "scopeOfWork",
+                p.status::text as status, p.scope_of_work as "scopeOfWork",
                 p.applied_at as "appliedAt", p.submitted_at as "submittedAt",
                 p.issued_at as "issuedAt", p.expires_at as "expiresAt",
                 p.last_checked_at as "lastCheckedAt", p.created_at as "createdAt",
-                p.updated_at, p.municipality_id as "jurisdictionId",
+                p.updated_at as "updatedAt", p.municipality_id as "jurisdictionId",
                 m.name as "jurisdictionName",
                 pr.name as "projectName",
-                c.name as "clientName"
+                c.name as "clientName",
+                -- The contractor's line, not a guess. See the note below.
+                c.service_line::text as "serviceLine",
+                /*
+                 * Distinct cycles rather than rows.
+                 *
+                 * The same number either way today: apply_correction_effects
+                 * assigns a fresh cycle to every correction inserted, so one
+                 * row is one cycle in this schema. Counting distinct cycles
+                 * says what the field means rather than what happens to be
+                 * equivalent, and it is what stays correct if corrections are
+                 * ever logged in batches per review.
+                 */
+                (select count(distinct pc.cycle)::int
+                   from ocs.permit_corrections pc
+                  where pc.permit_id = p.id) as "correctionCycles"
            from ocs.permits p
            left join ocs.municipalities m on m.id = p.municipality_id
            left join ocs.projects pr on pr.id = p.project_id
@@ -381,19 +398,38 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
         [companyId, q.limit],
       );
 
-      // `stage` is the field the frontend reads; `status` is this schema's own
-      // vocabulary. Both are returned so neither side has to guess.
+      /*
+       * `stage` is the field the frontend reads; `status` is this schema's own
+       * vocabulary. Both are returned so neither side has to guess.
+       *
+       * Everything else here was being invented, and each invention was read by
+       * a screen as though it were a fact:
+       *
+       *   serviceLine was the literal 'EXPEDITING'. The pipeline badges every
+       *   permit from it and filters on it, so every permit read as expediting
+       *   and the managed-licence filter matched nothing -- on the line where
+       *   this firm's licence is the one on the permit.
+       *
+       *   correctionCycles was the literal 0, and the reports page counts a
+       *   permit as first-pass when it is zero. The first-pass approval rate,
+       *   which is the headline number on that page, was always 100%.
+       *
+       *   trade came from `r.permit_type`, which does not exist -- the column
+       *   is aliased to permitType -- so toTrade received undefined and
+       *   returned SPECIALTY for every permit.
+       *
+       * None of the three could be seen from the response: each produced a
+       * plausible value of the right type.
+       */
       const permits = rows
         .map((r) => {
           const stage = toStage(r.status);
           return {
             ...r,
             stage,
-            trade: toTrade(r.permit_type),
-            serviceLine: 'EXPEDITING',
-            correctionCycles: 0,
-            risk: assessRisk({ stage, updatedAt: r.updated_at, expiresAt: r.expires_at }),
-            daysInStage: daysInStage(r.updated_at),
+            trade: toTrade(r.permitType),
+            risk: assessRisk({ stage, updatedAt: r.updatedAt, expiresAt: r.expiresAt }),
+            daysInStage: daysInStage(r.updatedAt),
           };
         })
         .filter((r) => !q.stage || r.stage === q.stage);
@@ -509,8 +545,8 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
       const rows = await tx.many<Record<string, unknown>>(
         `select id, id as "jurisdictionId", name, kind::text, county, state,
                 portal_url as "portalUrl", platform::text as platform,
-                status_check_enabled, adapter_verified_at,
                 status_check_enabled as "statusCheckEnabled",
+                adapter_verified_at as "adapterVerifiedAt",
                 contact_phone as "contactPhone",
                 portal_url_confidence as "portalUrlConfidence",
                 automation_approved as "automationApproved",
@@ -575,7 +611,8 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
               m.portal_url as "portalUrl",
               m.automation_approved as "automationApproved",
               m.portal_url_confidence as "portalUrlConfidence",
-              m.status_check_enabled, m.adapter_verified_at,
+              m.status_check_enabled as "statusCheckEnabled",
+              m.adapter_verified_at as "adapterVerifiedAt",
               (select count(*) from ocs.permits p
                 where p.municipality_id = m.id and p.deleted_at is null) as "ourVolume",
               exists (select 1 from ocs.integration_credentials c

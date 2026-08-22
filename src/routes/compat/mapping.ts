@@ -202,12 +202,21 @@ export function toPlatformLabel(platform: string | null | undefined): string {
  * the same conservative rule the status-check adapter applies. A jurisdiction
  * that merely has configuration is not automated.
  */
+/*
+ * Takes the row as it leaves the API, not as it comes out of Postgres.
+ *
+ * It used to read status_check_enabled and adapter_verified_at, so every query
+ * feeding it had to select those columns unaliased -- and the rows were then
+ * spread straight into the response, putting two snake_case keys on the wire
+ * that no frontend type declares. Reading the aliased names means the raw ones
+ * no longer need to be selected at all.
+ */
 export function toIntegrationTier(row: {
-  status_check_enabled?: boolean;
-  adapter_verified_at?: string | null;
+  statusCheckEnabled?: boolean;
+  adapterVerifiedAt?: string | null;
   platform?: string | null;
 }): string {
-  if (row.status_check_enabled && row.adapter_verified_at) return 'api';
+  if (row.statusCheckEnabled && row.adapterVerifiedAt) return 'api';
   if (row.platform && row.platform !== 'none') return 'portal';
   return 'manual';
 }
