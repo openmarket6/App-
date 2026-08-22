@@ -269,16 +269,29 @@ export function verifyWebhookSignature(
   // captured request is useless by the time anyone could replay it.
   if (Math.abs(now.getTime() - sentAt) > 5 * 60_000) return false;
 
-  const expected = createHmac('sha256', env.LOB_WEBHOOK_SECRET)
-    .update(`${timestamp}.${rawBody.toString('utf8')}`)
-    .digest('hex');
+  const mac = createHmac('sha256', env.LOB_WEBHOOK_SECRET)
+    .update(`${timestamp}.${rawBody.toString('utf8')}`);
+  const digest = mac.digest();
 
-  const a = Buffer.from(expected, 'utf8');
-  const b = Buffer.from(signature, 'utf8');
-  // Length is checked first because timingSafeEqual throws on a mismatch, and
-  // the comparison itself stays constant-time.
-  if (a.length !== b.length) return false;
-  return timingSafeEqual(a, b);
+  /*
+   * Hex or base64, whichever the provider sent.
+   *
+   * Both are encodings of the SAME 32 bytes, so accepting either gives an
+   * attacker nothing -- they still need the secret to produce either one. What
+   * it does buy is the difference between a working integration and one where
+   * every delivery event is silently rejected as forged. That failure mode is
+   * particularly nasty here: certified mail would keep going out, letters would
+   * keep arriving, and the proof of service the certified mail was bought for
+   * would never reach the record.
+   */
+  for (const encoding of ['hex', 'base64'] as const) {
+    const a = Buffer.from(digest.toString(encoding), 'utf8');
+    const b = Buffer.from(signature, 'utf8');
+    // Length first: timingSafeEqual throws on a mismatch. The comparison
+    // itself stays constant-time.
+    if (a.length === b.length && timingSafeEqual(a, b)) return true;
+  }
+  return false;
 }
 
 /**

@@ -24,7 +24,7 @@ import { withServiceContext } from '../../db/tenant.js';
 import { requireApiAuth, requireCapability, requireNativeMfa } from './auth.js';
 import { parse, clientIp } from '../../lib/http-helpers.js';
 import { forbidden, badRequest, notFound } from '../../lib/errors.js';
-import { env } from '../../config/env.js';
+import { env, returnAddress } from '../../config/env.js';
 import { usingSeparateServiceRole } from '../../db/pool.js';
 import { writeAudit } from '../../lib/audit.js';
 import { ROLE_CAPABILITIES, roleCatalogue } from '../../domain/capabilities.js';
@@ -104,6 +104,35 @@ export async function compatAdminRoutes(app: FastifyInstance): Promise<void> {
           label: 'Supabase storage',
           configured: isSet(env.SUPABASE_URL) && isSet(env.SUPABASE_SERVICE_ROLE_KEY),
           without: 'Documents and supervision photographs cannot be uploaded.',
+        },
+        {
+          key: 'mail',
+          label: 'Physical mail (Lob)',
+          configured: isSet(env.LOB_API_KEY),
+          without: 'Notices cannot be posted. Nothing is recorded as sent.',
+        },
+        {
+          key: 'mail_webhook',
+          label: 'Lob webhook signing secret',
+          configured: isSet(env.LOB_WEBHOOK_SECRET),
+          without:
+            'Delivery is never heard back, so a Notice to Owner can be served and ' +
+            'still have no proof of service — which is the whole reason it went ' +
+            'certified.',
+        },
+        {
+          key: 'mail_return_address',
+          /*
+           * Its own line rather than folded into 'mail'. A key with no return
+           * address sends letters that cannot come back, and an operator
+           * scanning this list should see the two failures separately because
+           * they are fixed in different places.
+           */
+          label: 'Return address for certified mail',
+          configured: returnAddress() !== null,
+          without:
+            'Certified mail has nowhere to return the signed receipt, so a ' +
+            'delivered letter still proves nothing.',
         },
       ];
 

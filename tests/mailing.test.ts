@@ -12,6 +12,7 @@ import {
   REQUIRED_MAIL_CLASS, MAIL_CLASS_LABELS, EXPECTED_COST_CENTS,
   resolveMailClass, validateAddress, validateMailRequest, canMail,
 } from '../src/domain/mailing.js';
+import { createHmac } from 'node:crypto';
 import { mapEventType, verifyWebhookSignature } from '../src/services/mail.js';
 import { DOCUMENT_KINDS } from '../src/domain/documents/index.js';
 import { dbConfigured, applyMigrations, client, ownerUrl, ALPHA } from './helpers/db.js';
@@ -144,6 +145,33 @@ describe('what the provider tells us', () => {
 
   it('refuses a webhook with no signature', () => {
     expect(verifyWebhookSignature(Buffer.from('{}'), undefined, undefined)).toBe(false);
+  });
+
+  it('accepts a genuine signature in either encoding', () => {
+    /*
+     * Lob's docs pin the headers, the `timestamp.body` signing input and the
+     * algorithm, but not whether the digest arrives hex or base64. Both are the
+     * same 32 bytes, so accepting either gives an attacker nothing -- they still
+     * need the secret. What it avoids is the nastiest failure mode this feature
+     * has: certified letters keep going out, keep arriving, and every delivery
+     * event is silently rejected as forged, so the proof of service never
+     * reaches the record.
+     */
+    // Matches tests/setup-env.ts, which sets it before config/env.ts freezes.
+    const secret = 'test-lob-webhook-secret';
+    const body = Buffer.from(JSON.stringify({ body: { id: 'ltr_1' } }));
+    const ts = String(Date.now());
+    const mac = () => createHmac('sha256', secret).update(`${ts}.${body.toString('utf8')}`);
+
+    expect(verifyWebhookSignature(body, ts, mac().digest('hex'))).toBe(true);
+    expect(verifyWebhookSignature(body, ts, mac().digest('base64'))).toBe(true);
+    // A wrong secret still fails, which is the point of all of it.
+    expect(
+      verifyWebhookSignature(
+        body, ts,
+        createHmac('sha256', 'wrong').update(`${ts}.${body.toString('utf8')}`).digest('hex'),
+      ),
+    ).toBe(false);
   });
 
   it('refuses a replayed signature', () => {
