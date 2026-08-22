@@ -74,6 +74,16 @@ function present(row: StoredItem) {
       ? null : Number(row.limitAggregateCents),
     label: COMPLIANCE_LABELS[row.kind] ?? row.kind,
     status,
+    /*
+     * The same aged status under the name the frontend reads.
+     *
+     * ComplianceRow declares both -- `status` as the human decision and
+     * `effectiveStatus` as that decision aged against today -- and only
+     * `status` was ever sent. Every page reading `effectiveStatus` got
+     * undefined, and the two that fall back with `?? 'MISSING'` therefore
+     * showed every item as missing no matter what was on file.
+     */
+    effectiveStatus: status,
     daysUntilExpiry: daysUntilExpiry({ expiresAt: row.expiresAt }),
   };
 }

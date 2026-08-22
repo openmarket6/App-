@@ -92,7 +92,9 @@ export async function compatSupportRoutes(app: FastifyInstance): Promise<void> {
           const tickets = await tx.many(
             `select ${TICKET_SELECT},
                     (select count(*) from ocs.support_messages m
-                      where m.ticket_id = t.id) as "messageCount"
+                      where m.ticket_id = t.id) as "messageCount",
+                    (select count(*) from ocs.support_messages m
+                      where m.ticket_id = t.id and m.is_internal) as "internalMessageCount"
                from ocs.support_tickets t
                left join ocs.permits p on p.id = t.permit_id
               where ($1::uuid is null or t.company_id = $1::uuid)
