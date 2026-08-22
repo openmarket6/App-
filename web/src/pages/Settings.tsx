@@ -8,14 +8,13 @@ import {
   TRADES,
   can,
   formatCents,
-  type SubscriptionPlan,
   type Trade,
   type TradeRate,
 } from '@flph/shared';
 import { api, get } from '../lib/api.ts';
 import { useAuth } from '../lib/auth.tsx';
 import { fmtDateTime } from '../lib/format.ts';
-import type { PlanListResponse, RateBookResponse } from '../lib/api-shapes.ts';
+import type { RateBookResponse } from '../lib/api-shapes.ts';
 import ErrorState from '../components/ErrorState.tsx';
 import { LoadingPanel } from '../components/Spinner.tsx';
 
@@ -329,209 +328,104 @@ function MoneyCell({
 // Plans
 // --------------------------------------------------------------------------
 
-function PlansTab() {
-  const { user } = useAuth();
-  const qc = useQueryClient();
-  const canManage = !!user && can(user.role, 'billing:manage');
+/**
+ * The price list, read-only on purpose.
+ *
+ * These numbers are not rows in a table. They are constants in
+ * src/shared/billing.ts, and scripts/build-site.mjs renders the public pricing
+ * page from the same constants at deploy time. An editor here would create a
+ * second source of truth for what a job costs, and the first person to use it
+ * would put the app and the public page out of step without either showing an
+ * error. Changing a price is a code change so that both move together.
+ */
+/** Exactly what GET /billing/plans returns — not SubscriptionPlan, which is the stored shape. */
+interface PublishedPlans {
+  plans: Array<{
+    key: string;
+    name: string;
+    kind: string;
+    tradeCount: number | null;
+    monthlyPriceCents: number;
+    onboardingFeeCents: number | null;
+    complianceRetainerCents: number | null;
+    pricePerPermitCents: number | null;
+  }>;
+  supervisorVisitCents: number;
+  allTradesThreshold: number;
+  note: string;
+}
 
+function PlansTab() {
   const q = useQuery({
     queryKey: ['plans'],
-    queryFn: () => get<PlanListResponse>('/billing/plans'),
+    queryFn: () => get<PublishedPlans>('/billing/plans'),
   });
 
-  const [draft, setDraft] = useState<SubscriptionPlan[] | null>(null);
-  useEffect(() => {
-    if (q.data?.plans) setDraft(q.data.plans);
-  }, [q.data]);
+  if (q.isLoading) return <LoadingPanel />;
+  if (q.isError) return <ErrorState error={q.error} title="Could not load the price list" />;
 
-  const save = useMutation({
-    mutationFn: (plans: SubscriptionPlan[]) =>
-      put<PlanListResponse>('/billing/plans', {
-        plans: plans.map((p) => ({
-          id: p.id,
-          name: p.name,
-          monthlyCents: p.monthlyCents,
-          includedPermitsPerMonth: p.includedPermitsPerMonth,
-          overagePerPermitCents: p.overagePerPermitCents,
-          includedSiteVisitsPerPermit: p.includedSiteVisitsPerPermit,
-          overagePerSiteVisitCents: p.overagePerSiteVisitCents,
-          stripePriceId: p.stripePriceId,
-          active: p.active,
-        })),
-      }),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ['plans'] }),
-  });
-
-  if (q.isLoading) return <LoadingPanel label="Loading plans…" rows={4} />;
-  if (q.isError) return <ErrorState error={q.error} onRetry={() => void q.refetch()} title="Could not load plans" />;
-
-  const plans = draft ?? [];
-  const dirty = JSON.stringify(plans) !== JSON.stringify(q.data?.plans ?? []);
-
-  function edit(id: string, patchPlan: Partial<SubscriptionPlan>) {
-    setDraft(plans.map((p) => (p.id === id ? { ...p, ...patchPlan } : p)));
-  }
+  const plans = q.data?.plans ?? [];
 
   return (
     <div className="space-y-3">
       <div className="card card-pad">
         <h2 className="text-sm font-semibold">Managed-licence subscriptions</h2>
         <p className="mt-1 text-[13px] text-ink-soft leading-relaxed max-w-3xl">
-          Supervision is the product on this line, so site visits are metered alongside permits. A plan somebody is
-          subscribed to cannot be removed — deactivate it instead, or the subscription points at nothing and the next
-          invoice has no price to read.
+          {q.data?.note ??
+            'Supervision is the product on this line, so site visits are metered alongside permits.'}
+        </p>
+        <p className="mt-2 text-[12px] text-ink-mute leading-relaxed max-w-3xl">
+          These prices are set in code and published to the public pricing page by the same build,
+          so the two can never disagree. To change one, change it there and deploy.
         </p>
       </div>
 
-      {save.isError && <ErrorState error={save.error} compact title="Could not save the plans" />}
-
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
         {plans.map((p) => (
-          <div key={p.id} className={`card card-pad ${p.active ? '' : 'opacity-60'}`}>
-            {canManage ? (
-              <input
-                className="input font-semibold"
-                value={p.name}
-                onChange={(e) => edit(p.id, { name: e.target.value })}
-              />
-            ) : (
-              <h3 className="text-sm font-semibold">{p.name}</h3>
-            )}
-
-            <div className="mt-3 space-y-2.5">
-              <PlanField
-                label="Monthly"
-                cents={p.monthlyCents}
-                editable={canManage}
-                onChange={(v) => edit(p.id, { monthlyCents: v })}
-              />
-              <PlanNumber
-                label="Permits included per month"
-                value={p.includedPermitsPerMonth}
-                editable={canManage}
-                onChange={(v) => edit(p.id, { includedPermitsPerMonth: v })}
-              />
-              <PlanField
-                label="Overage per permit"
-                cents={p.overagePerPermitCents}
-                editable={canManage}
-                onChange={(v) => edit(p.id, { overagePerPermitCents: v })}
-              />
-              <PlanNumber
-                label="Site visits included per permit"
-                value={p.includedSiteVisitsPerPermit}
-                editable={canManage}
-                onChange={(v) => edit(p.id, { includedSiteVisitsPerPermit: v })}
-              />
-              <PlanField
-                label="Overage per site visit"
-                cents={p.overagePerSiteVisitCents}
-                editable={canManage}
-                onChange={(v) => edit(p.id, { overagePerSiteVisitCents: v })}
-              />
+          <div key={p.key} className="card card-pad">
+            <h3 className="text-sm font-semibold">{p.name}</h3>
+            <div className="mt-1 text-[12px] text-ink-mute">
+              {p.tradeCount === null ? 'Every licensed trade' : `${p.tradeCount} trade${p.tradeCount === 1 ? '' : 's'}`}
             </div>
 
-            <div className="mt-3 border-t border-line pt-3">
-              <div className="label">Stripe price</div>
-              <div className="mt-0.5 text-[12px] font-mono break-all">
-                {p.stripePriceId ?? <span className="text-ink-mute font-sans">Not linked — the plan is a draft until it is</span>}
-              </div>
-            </div>
-
-            {canManage && (
-              <label className="mt-3 flex items-center gap-2 text-[13px]">
-                <input
-                  type="checkbox"
-                  className="h-4 w-4 rounded border-line text-brand focus:ring-brand/30"
-                  checked={p.active}
-                  onChange={(e) => edit(p.id, { active: e.target.checked })}
-                />
-                Active and sellable
-              </label>
-            )}
+            <dl className="mt-3 space-y-1.5 text-[13px]">
+              <PriceRow label="Monthly" cents={p.monthlyPriceCents} />
+              <PriceRow label="Onboarding" cents={p.onboardingFeeCents} />
+              <PriceRow label="Compliance retainer" cents={p.complianceRetainerCents} />
+              <PriceRow label="Per permit" cents={p.pricePerPermitCents} />
+            </dl>
           </div>
         ))}
       </div>
 
-      {canManage && (
-        <div className="card card-pad flex items-center justify-between gap-3">
-          <span className="text-[12px] text-ink-soft">Saving replaces the plan book wholesale.</span>
-          <div className="flex gap-2">
-            <button type="button" className="btn-ghost" disabled={!dirty} onClick={() => setDraft(q.data?.plans ?? [])}>
-              Discard
-            </button>
-            <button type="button" className="btn-primary" disabled={!dirty || save.isPending} onClick={() => save.mutate(plans)}>
-              {save.isPending ? 'Saving…' : 'Save plans'}
-            </button>
+      <div className="card card-pad flex flex-wrap gap-x-8 gap-y-2 text-[13px]">
+        <div>
+          <span className="label">Supervisor site visit</span>
+          <div className="mt-0.5 font-medium tabular-nums">
+            {formatCents(q.data?.supervisorVisitCents ?? 0)}
           </div>
         </div>
-      )}
+        <div>
+          <span className="label">All-trades threshold</span>
+          <div className="mt-0.5 font-medium tabular-nums">
+            {q.data?.allTradesThreshold ?? '—'} trades
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
 
-function PlanField({
-  label,
-  cents,
-  editable,
-  onChange,
-}: {
-  label: string;
-  cents: number;
-  editable: boolean;
-  onChange: (cents: number) => void;
-}) {
+/** One priced line inside a plan card. */
+function PriceRow({ label, cents }: { label: string; cents: number | null }) {
   return (
-    <label className="flex items-center justify-between gap-3">
-      <span className="text-[12px] text-ink-soft">{label}</span>
-      {editable ? (
-        <input
-          className="input py-1 w-28 text-right tabular-nums"
-          inputMode="decimal"
-          value={(cents / 100).toFixed(2)}
-          onChange={(e) => {
-            const n = Number(e.target.value.replace(/[^0-9.]/g, ''));
-            onChange(Number.isFinite(n) ? Math.round(n * 100) : 0);
-          }}
-        />
-      ) : (
-        <span className="text-[13px] font-medium tabular-nums">{formatCents(cents)}</span>
-      )}
-    </label>
+    <div className="flex items-baseline justify-between gap-3">
+      <dt className="text-ink-soft">{label}</dt>
+      <dd className="font-medium tabular-nums">{cents == null ? '—' : formatCents(cents)}</dd>
+    </div>
   );
 }
 
-function PlanNumber({
-  label,
-  value,
-  editable,
-  onChange,
-}: {
-  label: string;
-  value: number;
-  editable: boolean;
-  onChange: (n: number) => void;
-}) {
-  return (
-    <label className="flex items-center justify-between gap-3">
-      <span className="text-[12px] text-ink-soft">{label}</span>
-      {editable ? (
-        <input
-          className="input py-1 w-28 text-right tabular-nums"
-          inputMode="numeric"
-          value={value}
-          onChange={(e) => onChange(Math.max(0, Math.round(Number(e.target.value.replace(/[^0-9]/g, '')) || 0)))}
-        />
-      ) : (
-        <span className="text-[13px] font-medium tabular-nums">{value}</span>
-      )}
-    </label>
-  );
-}
-
-// --------------------------------------------------------------------------
-// Compliance policy
-// --------------------------------------------------------------------------
 
 function CompliancePolicyTab() {
   return (
