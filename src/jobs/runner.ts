@@ -16,7 +16,7 @@ import { randomUUID } from 'node:crypto';
 import { env } from '../config/env.js';
 import { logger } from '../lib/logger.js';
 import { withServiceContext } from '../db/tenant.js';
-import { claimJobs, completeJob, failJob, enqueue, type JobRow } from './queue.js';
+import { claimJobs, completeJob, failJob, enqueue, reapStuckJobs, type JobRow } from './queue.js';
 
 export class PermanentJobError extends Error {
   constructor(message: string) {
@@ -125,20 +125,131 @@ async function tickScheduler(): Promise<void> {
   );
 
   for (const schedule of due) {
-    await withServiceContext(
-      async (tx) => {
-        await enqueue(tx, {
+    const jobId = await withServiceContext(
+      async (tx) =>
+        enqueue(tx, {
           jobType: schedule.job_type,
           queue: schedule.queue,
           payload: { ...schedule.payload, scheduleName: schedule.name },
           // One pending run per schedule at a time.
           dedupeKey: `schedule:${schedule.name}`,
-        });
-      },
+        }),
       { reason: 'scheduler_enqueue' },
     );
-    logger.info({ schedule: schedule.name, jobType: schedule.job_type }, 'scheduled job enqueued');
+
+    // A null id means the unique dedupe index rejected the insert because a
+    // previous run of this schedule is still queued, running or failed.
+    //
+    // That is normal for one tick and a silent outage if it persists: on
+    // 22 Aug 2026 the reaper wedged in `running` with an expired lock, every
+    // later enqueue was deduped away, and `next_run_at` kept advancing as if
+    // the schedule were healthy. Recording the outcome is what makes the
+    // difference visible; `consecutive_failures` is what makes it alertable.
+    const status = jobId ? 'enqueued' : 'deduped';
+    await withServiceContext(
+      async (tx) => {
+        await tx.query(
+          `update ocs.job_schedules
+              set last_status = $2,
+                  last_enqueued_job_id = coalesce($3::uuid, last_enqueued_job_id),
+                  consecutive_failures =
+                    case when $2 = 'enqueued' then 0 else consecutive_failures + 1 end,
+                  last_error =
+                    case when $2 = 'enqueued' then null
+                         else 'enqueue deduplicated: a previous run has not finished' end,
+                  updated_at = now()
+            where id = $1`,
+          [schedule.id, status, jobId],
+        );
+      },
+      { reason: 'scheduler_status' },
+    );
+
+    if (jobId) {
+      logger.info({ schedule: schedule.name, jobType: schedule.job_type }, 'scheduled job enqueued');
+    } else {
+      logger.warn(
+        { schedule: schedule.name, jobType: schedule.job_type },
+        'scheduled job NOT enqueued -- a previous run is still outstanding',
+      );
+    }
   }
+}
+
+/**
+ * Reap stuck jobs out of band.
+ *
+ * `system.reap_stuck_jobs` also exists as a queued job, and that is exactly the
+ * problem it cannot solve: if the worker dies while running the reaper, the
+ * reaper is itself a stuck job, its dedupe key blocks every replacement, and
+ * nothing ever clears it. The recovery path must not travel through the queue
+ * it is recovering.
+ *
+ * So this runs directly on the worker loop, on a timer, owing nothing to the
+ * scheduler or the jobs table. `ocs.reap_stuck_jobs()` in migration 0038 is the
+ * third line: it can be run by pg_cron or by a human with a SQL console when
+ * no worker is alive at all.
+ */
+const REAP_INTERVAL_MS = 60_000;
+let lastReapAt = 0;
+
+async function reapOutOfBand(): Promise<void> {
+  const now = Date.now();
+  if (now - lastReapAt < REAP_INTERVAL_MS) return;
+  lastReapAt = now;
+  try {
+    const reaped = await reapStuckJobs();
+    if (reaped > 0) logger.warn({ reaped }, 'out-of-band reaper cleared stuck jobs');
+  } catch (err) {
+    logger.warn({ err }, 'out-of-band reap failed; will retry next tick');
+  }
+}
+
+/**
+ * Refuse to run a scheduler that is scheduling work nobody handles.
+ *
+ * `system.cleanup_refresh_tokens` was seeded by migration 0014 and no handler
+ * was ever registered for it. It has been enqueued every six hours since,
+ * failing permanently each time, and the only evidence was a log line among
+ * many. A schedule with no handler is a configuration error, and a
+ * configuration error should be loud at boot rather than quiet forever.
+ */
+export async function assertScheduledTypesAreHandled(): Promise<void> {
+  const rows = await withServiceContext(
+    async (tx) =>
+      tx.many<{ name: string; job_type: string }>(
+        `select name, job_type from ocs.job_schedules where is_enabled order by name`,
+      ),
+    { reason: 'schedule_handler_check' },
+  );
+
+  const orphaned = rows.filter((r) => !handlers.has(r.job_type));
+  if (orphaned.length === 0) return;
+
+  // Deliberately not a boot refusal. A worker that will not start because one
+  // schedule is misconfigured stops *all* background work -- a worse outcome
+  // than the fault it is objecting to. Disable the orphans instead, so they
+  // stop consuming a dedupe slot every interval, and make the fact loud in
+  // three places: the log, `job_schedules.last_status`, and `ocs.ops_alerts()`.
+  logger.error(
+    { orphaned, registered: registeredJobTypes() },
+    'enabled schedules have no registered handler; disabling them -- fix the handler or delete the schedule',
+  );
+
+  await withServiceContext(
+    async (tx) => {
+      await tx.query(
+        `update ocs.job_schedules
+            set is_enabled = false,
+                last_status = 'no_handler',
+                last_error = 'no handler is registered for this job type',
+                updated_at = now()
+          where job_type = any($1::text[])`,
+        [orphaned.map((r) => r.job_type)],
+      );
+    },
+    { reason: 'disable_orphaned_schedules' },
+  );
 }
 
 const QUEUES = ['default', 'integrations', 'notifications'];
@@ -206,6 +317,7 @@ async function loop(): Promise<void> {
   while (!shuttingDown) {
     try {
       await writeHeartbeat();
+      await reapOutOfBand();
       await tickScheduler();
 
       const capacity = env.WORKER_CONCURRENCY - inFlight;
@@ -249,6 +361,15 @@ export async function startWorker(): Promise<void> {
   // Written immediately, so a worker that dies during its first poll is still
   // distinguishable from one that never started at all.
   await writeHeartbeat(true);
+
+  // Clear anything the previous instance abandoned before claiming new work.
+  // A redeploy is the single most common way jobs are orphaned, and this is
+  // the first moment a healthy process exists to notice.
+  lastReapAt = 0;
+  await reapOutOfBand();
+
+  await assertScheduledTypesAreHandled();
+
   await loop();
 }
 

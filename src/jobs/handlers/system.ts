@@ -215,6 +215,79 @@ async function integrationCoverage(): Promise<unknown> {
   );
 }
 
+/**
+ * Delete refresh tokens that can no longer be used.
+ *
+ * Migration 0014 seeded a `cleanup-refresh-tokens` schedule and no handler was
+ * ever written for it, so every run since has failed. Meanwhile the table only
+ * grows: rotation writes a new row on every refresh and revokes the old one,
+ * and nothing removed the revoked rows. Five accounts had produced 165 rows,
+ * 154 of them dead, before anyone looked.
+ *
+ * Revoked rows are kept for a grace window rather than deleted immediately --
+ * `native.ts` detects token reuse by finding an already-revoked row, and
+ * deleting it too eagerly would turn a stolen-token alarm into a silent
+ * "unknown token" 401.
+ */
+const REVOKED_RETENTION_DAYS = 30;
+
+async function cleanupRefreshTokens(): Promise<unknown> {
+  return withServiceContext(
+    async (tx) => {
+      const expired = await tx.query(
+        `delete from ocs.refresh_tokens where expires_at < now() - interval '1 day'`,
+      );
+      const revoked = await tx.query(
+        `delete from ocs.refresh_tokens
+          where revoked_at is not null
+            and revoked_at < now() - make_interval(days => $1)`,
+        [REVOKED_RETENTION_DAYS],
+      );
+      const deleted = (expired.rowCount ?? 0) + (revoked.rowCount ?? 0);
+      if (deleted > 0) logger.info({ deleted }, 'refresh tokens cleaned up');
+      return { expiredDeleted: expired.rowCount ?? 0, revokedDeleted: revoked.rowCount ?? 0 };
+    },
+    { reason: 'cleanup_refresh_tokens' },
+  );
+}
+
+/**
+ * The hunter.
+ *
+ * Every check lives in `ocs.ops_alerts()` (migration 0038) rather than here,
+ * so the health endpoint, this job and a human in a SQL console are all reading
+ * one definition and cannot disagree about whether the system is healthy.
+ *
+ * This job's only job is to run that function on a schedule and make the
+ * answer impossible to miss: critical findings are logged at error level, which
+ * is what a log drain alerts on, and returned as the job result, which is what
+ * `GET /v1/admin/jobs` shows.
+ */
+async function integritySweep(): Promise<unknown> {
+  const alerts = await withServiceContext(
+    async (tx) =>
+      tx.many<{ severity: string; code: string; detail: Record<string, unknown> }>(
+        `select severity, code, detail from ocs.ops_alerts()`,
+      ),
+    { reason: 'integrity_sweep' },
+  );
+
+  const critical = alerts.filter((a) => a.severity === 'critical');
+  const warnings = alerts.filter((a) => a.severity !== 'critical');
+
+  if (critical.length > 0) {
+    logger.error({ alerts: critical }, 'INTEGRITY SWEEP: critical findings');
+  }
+  if (warnings.length > 0) {
+    logger.warn({ alerts: warnings }, 'integrity sweep: warnings');
+  }
+  if (alerts.length === 0) {
+    logger.info('integrity sweep: clean');
+  }
+
+  return { critical: critical.length, warnings: warnings.length, alerts };
+}
+
 export function register(): void {
   registerHandler('system.reap_stuck_jobs', reap);
   registerHandler('integrations.coverage_report', integrationCoverage);
@@ -222,4 +295,6 @@ export function register(): void {
   registerHandler('system.retry_failed_webhooks', retryFailedWebhooks);
   registerHandler('payments.reconcile', reconcilePayments);
   registerHandler('documents.purge_expired', purgeDeletedDocuments);
+  registerHandler('system.cleanup_refresh_tokens', cleanupRefreshTokens);
+  registerHandler('system.integrity_sweep', integritySweep);
 }
