@@ -138,7 +138,12 @@ export async function compatEngineeringRoutes(app: FastifyInstance): Promise<voi
                     (e.license_expires_on < current_date) as "licenseExpired",
                     e.disciplines, e.max_active_orders as "maxActiveOrders",
                     e.is_active as "isActive",
-                    (select count(*) from ocs.drafting_orders o
+                    -- ::int because count() is bigint, and node-pg returns
+                    -- bigint as a STRING to avoid silent precision loss. A
+                    -- caller comparing it against a numeric cap would be
+                    -- comparing a string, which is a bug waiting for the
+                    -- first two-digit workload.
+                    (select count(*)::int from ocs.drafting_orders o
                       where o.engineer_id = e.id and o.deleted_at is null
                         and o.status not in ('delivered','cancelled')) as "activeOrders"
                from ocs.engineers e
