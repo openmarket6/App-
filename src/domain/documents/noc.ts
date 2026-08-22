@@ -148,18 +148,36 @@ export function validateNoc(input: Partial<NocInput>): FieldProblem[] {
         'tell a reader what is being built.',
     });
   }
-  if (blank(input.ownerName) || blank(input.ownerAddress)) {
+  /*
+   * Reported per field, not per pair.
+   *
+   * These once raised a single problem on the NAME whenever either half was
+   * missing, which sent somebody with a blank ADDRESS to fix a name that was
+   * already correct. A problem that points at the wrong box is worse than a
+   * vague one: it is confidently wrong.
+   */
+  if (blank(input.ownerName)) {
     problems.push({
-      field: 'ownerName',
-      severity: 'blocking',
-      detail: "The owner's name and address are both required.",
+      field: 'ownerName', severity: 'blocking',
+      detail: "The owner's name is required.",
     });
   }
-  if (blank(input.contractorName) || blank(input.contractorAddress)) {
+  if (blank(input.ownerAddress)) {
     problems.push({
-      field: 'contractorName',
-      severity: 'blocking',
-      detail: "The contractor's name and address are both required.",
+      field: 'ownerAddress', severity: 'blocking',
+      detail: "The owner's address is required.",
+    });
+  }
+  if (blank(input.contractorName)) {
+    problems.push({
+      field: 'contractorName', severity: 'blocking',
+      detail: "The contractor's name is required.",
+    });
+  }
+  if (blank(input.contractorAddress)) {
+    problems.push({
+      field: 'contractorAddress', severity: 'blocking',
+      detail: "The contractor's address is required.",
     });
   }
   if (blank(input.ownerSignatureName)) {

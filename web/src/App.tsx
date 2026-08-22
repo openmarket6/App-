@@ -27,6 +27,7 @@ import Compliance from './pages/Compliance.tsx';
 import Drafting from './pages/Drafting.tsx';
 import Supervision from './pages/Supervision.tsx';
 import FieldVisits from './pages/FieldVisits.tsx';
+import DocumentsGenerate from './pages/DocumentsGenerate.tsx';
 import Invoices from './pages/Invoices.tsx';
 import Support from './pages/Support.tsx';
 import Notary from './pages/Notary.tsx';
@@ -85,6 +86,7 @@ export default function App() {
         <Route path="/inspections" element={<Inspections />} />
 
         <Route path="/documents" element={<Compliance />} />
+        <Route path="/documents/generate" element={staffOnly(<DocumentsGenerate />)} />
         <Route path="/drafting" element={<Drafting />} />
         <Route path="/invoices" element={<Invoices />} />
         <Route path="/support" element={<Support />} />

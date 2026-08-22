@@ -18,6 +18,7 @@ import {
   DOCUMENT_KINDS, isDocumentKind, esc,
 } from '../src/domain/documents/index.js';
 import { planFor, snapshot } from '../src/domain/pricing.js';
+import { DOCUMENT_FIELDS } from '../src/domain/documents/fields.js';
 
 const AT = { generatedAt: '2026-03-01T12:00:00.000Z' };
 const blocking = (ps: { severity: string; field: string }[]) =>
@@ -430,6 +431,103 @@ describe('the generator itself', () => {
       expect(Array.isArray(validateDocument(kind, {}))).toBe(true);
       // Nothing validates from an empty object -- which is the point.
       expect(generateDocument(kind, {}, AT).ok).toBe(false);
+    }
+  });
+});
+
+// -----------------------------------------------------------------------------
+
+describe('the form and the validator', () => {
+  /*
+   * These are the tests that make the served field list safe to build a screen
+   * from. Without them, DOCUMENT_FIELDS is a second hand-maintained list that
+   * drifts -- and the person who finds out is a permit tech staring at a
+   * refusal for a box that was never on their screen.
+   */
+  const emptyBlockers = (kind: (typeof DOCUMENT_KINDS)[number]) =>
+    validateDocument(kind, {}, new Date('2026-03-01T12:00:00Z'))
+      .filter((p) => p.severity === 'blocking')
+      .map((p) => p.field);
+
+  it('offers a field for everything the validator blocks on', () => {
+    for (const kind of DOCUMENT_KINDS) {
+      const offered = new Set(DOCUMENT_FIELDS[kind].map((f) => f.name));
+      for (const field of emptyBlockers(kind)) {
+        // `pricing` is snapshotted by the server from a plan key, so it is
+        // deliberately not a form field. Everything else must be on the form.
+        if (field.startsWith('pricing')) continue;
+        expect(offered.has(field), `${kind}.${field} is not on the form`).toBe(true);
+      }
+    }
+  });
+
+  it('marks those fields required', () => {
+    for (const kind of DOCUMENT_KINDS) {
+      const byName = new Map(DOCUMENT_FIELDS[kind].map((f) => [f.name, f]));
+      for (const field of emptyBlockers(kind)) {
+        if (field.startsWith('pricing')) continue;
+        const spec = byName.get(field);
+        expect(spec?.required, `${kind}.${field} is optional on the form but blocks`).toBe(true);
+      }
+    }
+  });
+
+  it('does not require anything the validator lets through', () => {
+    /*
+     * The other direction, and the one that quietly costs the most: a form
+     * that demands a field the statute does not stops somebody producing a
+     * document they were entitled to produce.
+     */
+    for (const kind of DOCUMENT_KINDS) {
+      const blockers = new Set(emptyBlockers(kind));
+      for (const spec of DOCUMENT_FIELDS[kind]) {
+        if (!spec.required) continue;
+        expect(
+          blockers.has(spec.name),
+          `${kind}.${spec.name} is required on the form but the validator allows it`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  it('gives every field a label and a group', () => {
+    for (const kind of DOCUMENT_KINDS) {
+      for (const f of DOCUMENT_FIELDS[kind]) {
+        expect(f.label.trim().length, `${kind}.${f.name}`).toBeGreaterThan(0);
+        expect(f.group.trim().length, `${kind}.${f.name}`).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it('names no field twice', () => {
+    for (const kind of DOCUMENT_KINDS) {
+      const names = DOCUMENT_FIELDS[kind].map((f) => f.name);
+      expect(new Set(names).size, kind).toBe(names.length);
+    }
+  });
+
+  it('offers only fields the renderer actually reads', () => {
+    // A field on the form that nothing prints is a question asked for nothing.
+    for (const kind of DOCUMENT_KINDS) {
+      const filled: Record<string, unknown> = {};
+      for (const f of DOCUMENT_FIELDS[kind]) {
+        if (f.type === 'money' || f.type === 'number') filled[f.name] = 12_345;
+        // Dates get a real date: a marker string in a date field is a blocking
+        // problem, which would make this test fail for the wrong reason.
+        else if (f.type === 'date') filled[f.name] = '2026-02-20';
+        else filled[f.name] = `ZZ-${f.name}-ZZ`;
+      }
+      if (kind === 'CONTRACTOR_AGREEMENT') {
+        filled['pricing'] = snapshot(planFor('THREE_TRADES'), '2026-03-01T12:00:00.000Z');
+      }
+      const r = generateDocument(kind, filled, AT, new Date('2026-03-01T12:00:00Z'));
+      expect(r.ok, kind).toBe(true);
+      if (!r.ok) continue;
+      for (const f of DOCUMENT_FIELDS[kind]) {
+        if (f.type !== 'text' && f.type !== 'textarea') continue;
+        expect(r.html, `${kind}.${f.name} never reaches the page`)
+          .toContain(`ZZ-${f.name}-ZZ`);
+      }
     }
   });
 });

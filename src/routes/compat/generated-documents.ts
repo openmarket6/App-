@@ -32,6 +32,8 @@ import {
   DOCUMENT_KINDS, DOCUMENT_KIND_LABELS, validateDocument, generateDocument,
   type DocumentKind, type FieldProblem,
 } from '../../domain/documents/index.js';
+import { DOCUMENT_FIELDS } from '../../domain/documents/fields.js';
+import { PLANS, planFor, snapshot, type PlanKey } from '../../domain/pricing.js';
 
 const KIND = z.enum(DOCUMENT_KINDS as unknown as [string, ...string[]]);
 
@@ -122,6 +124,37 @@ function refusal(problems: FieldProblem[]) {
   );
 }
 
+/**
+ * Take the pricing snapshot on the server, from a plan key.
+ *
+ * The browser sends `planKey`, never prices. A price table that arrives in a
+ * request body is a price table the person signing could have edited, and the
+ * snapshot's entire job is to be the prices that were actually agreed. Taking
+ * it here also stamps `capturedAt` from the server clock rather than from a
+ * phone whose date might be wrong.
+ */
+function withServerPricing(
+  kind: DocumentKind,
+  input: Record<string, unknown>,
+  capturedAt: string,
+): Record<string, unknown> {
+  if (kind !== 'CONTRACTOR_AGREEMENT') return input;
+
+  const planKey = input['planKey'];
+  if (typeof planKey !== 'string') return input;
+
+  const known = PLANS.some((p) => p.key === planKey);
+  if (!known) throw badRequest(`No such plan: ${planKey}`);
+
+  const plan = planFor(planKey as PlanKey);
+  const { planKey: _drop, ...rest } = input;
+  return {
+    ...rest,
+    pricing: snapshot(plan, capturedAt),
+    classificationCount: rest['classificationCount'] ?? plan.tradeCount,
+  };
+}
+
 export async function compatGeneratedDocumentsRoutes(app: FastifyInstance): Promise<void> {
   /**
    * What can be produced, and what each one needs.
@@ -134,7 +167,22 @@ export async function compatGeneratedDocumentsRoutes(app: FastifyInstance): Prom
     '/api/generated-documents/kinds',
     { preHandler: [requireApiAuth] },
     async () => ({
-      kinds: DOCUMENT_KINDS.map((k) => ({ kind: k, label: DOCUMENT_KIND_LABELS[k] })),
+      kinds: DOCUMENT_KINDS.map((k) => ({
+        kind: k,
+        label: DOCUMENT_KIND_LABELS[k],
+        fields: DOCUMENT_FIELDS[k],
+      })),
+      /*
+       * Plans travel with the form because a contractor agreement snapshots
+       * one. The screen sends a planKey and nothing else about money -- see
+       * withServerPricing below for why.
+       */
+      plans: PLANS.map((p) => ({
+        key: p.key, name: p.name, tradeCount: p.tradeCount,
+        monthlyPriceCents: p.monthlyPriceCents,
+        onboardingFeeCents: p.onboardingFeeCents,
+        complianceRetainerCents: p.complianceRetainerCents,
+      })),
     }),
   );
 
@@ -153,7 +201,9 @@ export async function compatGeneratedDocumentsRoutes(app: FastifyInstance): Prom
         req.body,
         'body',
       );
-      const problems = validateDocument(body.kind as DocumentKind, body.input);
+      const kind = body.kind as DocumentKind;
+      const input = withServerPricing(kind, body.input, new Date().toISOString());
+      const problems = validateDocument(kind, input);
       return {
         kind: body.kind,
         ok: !problems.some((p) => p.severity === 'blocking'),
@@ -304,9 +354,10 @@ export async function compatGeneratedDocumentsRoutes(app: FastifyInstance): Prom
           }
 
           const generatedAt = new Date();
+          const input = withServerPricing(kind, body.input, generatedAt.toISOString());
           const result = generateDocument(
             kind,
-            body.input,
+            input,
             {
               generatedAt: generatedAt.toISOString(),
               companyName: null,
@@ -351,7 +402,7 @@ export async function compatGeneratedDocumentsRoutes(app: FastifyInstance): Prom
              returning ${RETURNING}`,
             [
               companyId, kind, title, body.projectId ?? null, body.permitId ?? null,
-              JSON.stringify(body.input), result.html, sha256,
+              JSON.stringify(input), result.html, sha256,
               JSON.stringify(result.warnings), body.supersedesId ?? null,
               auth.userId, generatedAt,
             ],

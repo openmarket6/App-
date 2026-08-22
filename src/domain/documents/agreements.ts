@@ -76,11 +76,22 @@ export function validateHoldHarmless(
       detail: 'Name the party being held harmless.',
     });
   }
-  if (blank(input.indemnifyingPartyName) || blank(input.indemnifyingPartyAddress)) {
+  // Per field, so a blank address does not point somebody at the name.
+  if (blank(input.indemnifyingPartyName)) {
     problems.push({
       field: 'indemnifyingPartyName',
       severity: 'blocking',
-      detail: 'The indemnifying party needs both a legal name and an address.',
+      detail: 'The indemnifying party needs its legal name.',
+      consequence:
+        'A trade name is not a legal entity. An agreement signed in one may ' +
+        'bind nobody.',
+    });
+  }
+  if (blank(input.indemnifyingPartyAddress)) {
+    problems.push({
+      field: 'indemnifyingPartyAddress',
+      severity: 'blocking',
+      detail: 'The indemnifying party needs an address.',
       consequence:
         'An indemnity that cannot be served on anybody cannot be enforced ' +
         'against anybody.',
@@ -208,14 +219,21 @@ export function validateContractorAgreement(
 ): FieldProblem[] {
   const problems: FieldProblem[] = [];
 
-  if (blank(input.companyLegalName) || blank(input.companyAddress)) {
+  if (blank(input.companyLegalName)) {
     problems.push({
       field: 'companyLegalName',
       severity: 'blocking',
-      detail: 'The company needs both its legal name and an address.',
+      detail: 'The company needs its legal name.',
       consequence:
         'A trade name is not a legal entity. An agreement signed in one may ' +
         'bind nobody.',
+    });
+  }
+  if (blank(input.companyAddress)) {
+    problems.push({
+      field: 'companyAddress',
+      severity: 'blocking',
+      detail: 'The company needs an address.',
     });
   }
   if (blank(input.signerName)) {
