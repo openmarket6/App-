@@ -340,12 +340,15 @@ function RoleControl({
    * nothing and the administrator with no way to know that.
    */
   const [resentUrl, setResentUrl] = useState<string | null>(null);
+  const [resentEmailed, setResentEmailed] = useState(false);
   const [resentCopied, setResentCopied] = useState(false);
 
   const resend = useMutation({
-    mutationFn: () => post<{ acceptPath?: string | null }>(`/users/${row.id}/resend-invite`, {}),
+    mutationFn: () =>
+      post<{ acceptPath?: string | null; emailed?: boolean }>(`/users/${row.id}/resend-invite`, {}),
     onSuccess: (data) => {
       setResentCopied(false);
+      setResentEmailed(Boolean(data?.emailed));
       setResentUrl(inviteLink(data?.acceptPath));
       invalidate();
     },
@@ -459,7 +462,9 @@ function RoleControl({
       {resentUrl && (
         <div className="space-y-1 rounded-md border border-good/20 bg-good-soft px-2.5 py-2">
           <p className="text-[11px] text-good leading-snug">
-            New invitation link for {row.name}. Send it to them — it is shown here only because nothing emails it.
+            {resentEmailed
+              ? `Emailed to ${row.email}. The link is here too, in case it does not arrive.`
+              : `Could not email it — send this link to ${row.name} yourself.`}
           </p>
           <div className="flex gap-1.5">
             <input
@@ -510,11 +515,12 @@ function InviteDrawer({ canAssignRole, onClose }: { canAssignRole: boolean; onCl
   // admin sends it. Closing the drawer on success would throw the only copy
   // away, so it stays open until the link has been taken.
   const [inviteUrl, setInviteUrl] = useState<string | null>(null);
+  const [emailed, setEmailed] = useState(false);
   const [copied, setCopied] = useState(false);
 
   const invite = useMutation({
     mutationFn: () =>
-      post<{ acceptPath?: string | null }>('/users/invite', {
+      post<{ acceptPath?: string | null; emailed?: boolean }>('/users/invite', {
         email: email.trim(),
         name: name.trim(),
         role,
@@ -523,6 +529,7 @@ function InviteDrawer({ canAssignRole, onClose }: { canAssignRole: boolean; onCl
     onSuccess: (data) => {
       void qc.invalidateQueries({ queryKey: ['users'] });
       const url = inviteLink(data?.acceptPath);
+      setEmailed(Boolean(data?.emailed));
       setInviteUrl(url);
       if (!url) onClose();
     },
@@ -560,7 +567,10 @@ function InviteDrawer({ canAssignRole, onClose }: { canAssignRole: boolean; onCl
       {inviteUrl ? (
         <div className="space-y-4">
           <div className="rounded-md bg-good-soft border border-good/20 px-3 py-2 text-sm text-good">
-            Account created for {email.trim()}.
+            Account created for {email.trim()}.{' '}
+            {emailed
+              ? 'The invitation has been emailed to them.'
+              : 'Email is not configured, so send them the link below yourself.'}
           </div>
           <div>
             <span className="label">Invitation link</span>
