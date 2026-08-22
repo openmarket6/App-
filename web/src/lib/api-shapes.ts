@@ -186,6 +186,22 @@ export interface SubscriptionListResponse {
   total: number;
 }
 
+/**
+ * `GET /billing/subscription` — one contractor's live subscription.
+ *
+ * Singular because at most one can be live at a time, and the retainer comes
+ * with it: a plan running on less cover than it requires is the thing you need
+ * to see, and separating them would let a screen show the plan without it.
+ */
+export interface SubscriptionResponse {
+  subscription: SubscriptionRow | null;
+  retainer: {
+    heldCents: number;
+    requiredCents: number;
+    shortfallCents: number;
+  } | null;
+}
+
 // --- GET /projects ---------------------------------------------------------
 
 export interface ProjectRow extends Project {
