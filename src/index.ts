@@ -39,6 +39,7 @@ import { compatCorrectionsRoutes } from './routes/compat/corrections.js';
 import { compatInspectionsRoutes } from './routes/compat/inspections.js';
 import { compatAdminRoutes } from './routes/compat/admin.js';
 import { compatSupportRoutes } from './routes/compat/support.js';
+import { compatNotaryRoutes } from './routes/compat/notary.js';
 import { supervisionRoutes } from './routes/supervision.js';
 import { publicSiteRoutes } from './routes/public-site.js';
 
@@ -264,6 +265,7 @@ export async function buildServer() {
   await app.register(compatInspectionsRoutes);
   await app.register(compatAdminRoutes);
   await app.register(compatSupportRoutes);
+  await app.register(compatNotaryRoutes);
   await app.register(compatApiRoutes);
 
   // Last: serves the portal and intake form from this same service, so the
