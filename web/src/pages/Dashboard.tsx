@@ -296,26 +296,26 @@ export default function Dashboard() {
             <div className="mt-4 h-[280px]">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={chartData} margin={{ top: 20, right: 8, left: -16, bottom: 44 }}>
-                  <CartesianGrid stroke="#e3e6ea" vertical={false} />
+                  <CartesianGrid stroke="#dce3eb" vertical={false} />
                   <XAxis
                     dataKey="label"
-                    tick={{ fontSize: 11, fill: '#5b6b7c' }}
+                    tick={{ fontSize: 11, fill: '#48586e' }}
                     interval={0}
                     angle={-35}
                     textAnchor="end"
                     height={60}
-                    axisLine={{ stroke: '#e3e6ea' }}
+                    axisLine={{ stroke: '#dce3eb' }}
                     tickLine={false}
                   />
                   <YAxis
-                    tick={{ fontSize: 11, fill: '#8a97a5' }}
+                    tick={{ fontSize: 11, fill: '#5f7089' }}
                     allowDecimals={false}
                     axisLine={false}
                     tickLine={false}
                   />
                   <Tooltip
-                    cursor={{ fill: '#f6f7f9' }}
-                    contentStyle={{ fontSize: 12, borderRadius: 8, borderColor: '#e3e6ea' }}
+                    cursor={{ fill: '#f2f5f7' }}
+                    contentStyle={{ fontSize: 12, borderRadius: 8, borderColor: '#dce3eb' }}
                     formatter={(v: number) => [v, 'Permits']}
                   />
                   <Bar
@@ -327,7 +327,7 @@ export default function Dashboard() {
                       if (stage) navigate(`/pipeline?stage=${stage}`);
                     }}
                   >
-                    <LabelList dataKey="count" position="top" style={{ fontSize: 11, fill: '#5b6b7c' }} />
+                    <LabelList dataKey="count" position="top" style={{ fontSize: 11, fill: '#48586e' }} />
                     {chartData.map((d) => (
                       <Cell
                         key={d.stage}
@@ -336,7 +336,7 @@ export default function Dashboard() {
                             ? '#a15c07'
                             : d.stage === 'DENIED' || d.stage === 'EXPIRED'
                               ? '#b42318'
-                              : '#1a5490'
+                              : '#185ac6'
                         }
                       />
                     ))}

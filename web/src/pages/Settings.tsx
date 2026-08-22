@@ -125,9 +125,7 @@ function FirmTab() {
           <div>
             <dt className="label">Mark</dt>
             <dd className="mt-1">
-              <span className="inline-grid h-9 w-9 place-items-center rounded bg-navy text-white text-[13px] font-bold tracking-tight">
-                1CS
-              </span>
+              <img src="/brand/1cs-mark.png" alt="1CS" className="h-9 w-auto" />
             </dd>
           </div>
           <div>

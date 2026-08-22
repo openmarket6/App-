@@ -26,9 +26,9 @@ export default function Login() {
     <div className="min-h-full grid lg:grid-cols-2">
       <div className="hidden lg:flex flex-col justify-between bg-navy text-white p-12">
         <div className="flex items-center gap-3">
-          <div className="h-10 w-10 rounded bg-white/10 grid place-items-center text-sm font-bold tracking-wide">1CS</div>
+          <img src="/brand/1cs-mark-onnavy.png" alt="" aria-hidden className="h-9 w-auto shrink-0" />
           <div>
-            <div className="font-semibold leading-tight">1 Contractor Solutions</div>
+            <div className="font-semibold leading-tight">Contractor Solutions</div>
           </div>
         </div>
         <div className="max-w-md">
@@ -44,8 +44,8 @@ export default function Login() {
       <div className="flex items-center justify-center p-6">
         <form onSubmit={onSubmit} className="w-full max-w-sm">
           <div className="lg:hidden flex items-center gap-3 mb-8">
-            <div className="h-10 w-10 rounded bg-navy grid place-items-center text-white text-sm font-bold">1CS</div>
-            <div className="font-semibold">1 Contractor Solutions</div>
+            <img src="/brand/1cs-mark.png" alt="" aria-hidden className="h-9 w-auto shrink-0" />
+            <div className="font-semibold">Contractor Solutions</div>
           </div>
 
           <h2 className="text-xl font-semibold">Sign in</h2>

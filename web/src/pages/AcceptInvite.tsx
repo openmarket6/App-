@@ -39,7 +39,7 @@ export default function AcceptInvite() {
     <div className="min-h-full grid place-items-center p-6">
       <form onSubmit={onSubmit} className="card card-pad w-full max-w-sm">
         <div className="flex items-center gap-3">
-          <div className="h-9 w-9 rounded bg-navy grid place-items-center text-white text-[11px] font-bold">1CS</div>
+          <img src="/brand/1cs-mark.png" alt="" aria-hidden className="h-8 w-auto shrink-0" />
           <div className="font-semibold">1 Contractor Solutions</div>
         </div>
 

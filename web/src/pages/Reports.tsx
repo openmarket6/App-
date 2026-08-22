@@ -299,10 +299,10 @@ export default function Reports() {
                 data={reviewByJurisdiction}
                 margin={{ top: 4, right: 56, left: 8, bottom: 4 }}
               >
-                <CartesianGrid stroke="#e3e6ea" horizontal={false} />
+                <CartesianGrid stroke="#dce3eb" horizontal={false} />
                 <XAxis
                   type="number"
-                  tick={{ fontSize: 11, fill: '#8a97a5' }}
+                  tick={{ fontSize: 11, fill: '#5f7089' }}
                   axisLine={false}
                   tickLine={false}
                   allowDecimals={false}
@@ -311,13 +311,13 @@ export default function Reports() {
                   type="category"
                   dataKey="name"
                   width={170}
-                  tick={{ fontSize: 11, fill: '#5b6b7c' }}
+                  tick={{ fontSize: 11, fill: '#48586e' }}
                   axisLine={false}
                   tickLine={false}
                 />
                 <Tooltip
-                  cursor={{ fill: '#f6f7f9' }}
-                  contentStyle={{ fontSize: 12, borderRadius: 8, borderColor: '#e3e6ea' }}
+                  cursor={{ fill: '#f2f5f7' }}
+                  contentStyle={{ fontSize: 12, borderRadius: 8, borderColor: '#dce3eb' }}
                   formatter={(v: number, _n, item: { payload?: { n?: number } }) => [
                     `${v} days (n=${item?.payload?.n ?? 0})`,
                     'Median review',
@@ -328,10 +328,10 @@ export default function Reports() {
                     dataKey="days"
                     position="right"
                     formatter={(v: number) => `${v}d`}
-                    style={{ fontSize: 11, fill: '#5b6b7c' }}
+                    style={{ fontSize: 11, fill: '#48586e' }}
                   />
                   {reviewByJurisdiction.map((r) => (
-                    <Cell key={r.id} fill={r.n < 5 ? '#8a97a5' : '#1a5490'} />
+                    <Cell key={r.id} fill={r.n < 5 ? '#5f7089' : '#185ac6'} />
                   ))}
                 </Bar>
               </BarChart>
@@ -356,22 +356,22 @@ export default function Reports() {
             <div className="mt-4 h-[240px]">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={firstPassTrend} margin={{ top: 8, right: 12, left: -18, bottom: 4 }}>
-                  <CartesianGrid stroke="#e3e6ea" vertical={false} />
+                  <CartesianGrid stroke="#dce3eb" vertical={false} />
                   <XAxis
                     dataKey="label"
-                    tick={{ fontSize: 11, fill: '#5b6b7c' }}
-                    axisLine={{ stroke: '#e3e6ea' }}
+                    tick={{ fontSize: 11, fill: '#48586e' }}
+                    axisLine={{ stroke: '#dce3eb' }}
                     tickLine={false}
                   />
                   <YAxis
                     domain={[0, 100]}
-                    tick={{ fontSize: 11, fill: '#8a97a5' }}
+                    tick={{ fontSize: 11, fill: '#5f7089' }}
                     axisLine={false}
                     tickLine={false}
                     tickFormatter={(v: number) => `${v}%`}
                   />
                   <Tooltip
-                    contentStyle={{ fontSize: 12, borderRadius: 8, borderColor: '#e3e6ea' }}
+                    contentStyle={{ fontSize: 12, borderRadius: 8, borderColor: '#dce3eb' }}
                     formatter={(v: number, _n, item: { payload?: { decided?: number } }) => [
                       `${v}% of ${item?.payload?.decided ?? 0} decided`,
                       'First pass',
@@ -380,9 +380,9 @@ export default function Reports() {
                   <Line
                     type="monotone"
                     dataKey="rate"
-                    stroke="#1a5490"
+                    stroke="#185ac6"
                     strokeWidth={2}
-                    dot={{ r: 3, fill: '#1a5490' }}
+                    dot={{ r: 3, fill: '#185ac6' }}
                   />
                 </LineChart>
               </ResponsiveContainer>
