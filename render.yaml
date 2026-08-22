@@ -1,5 +1,31 @@
 # Render Blueprint for One Contractor Solutions.
 #
+# ⚠️ THIS FILE IS NOT WHAT IS CURRENTLY RUNNING.
+#
+# The live services were created in the Render dashboard, not from this
+# blueprint, and they have different names and a different branch:
+#
+#   LIVE   ocs-api     srv-da4cfds9v7es73b04kbg   https://ocs-api-i654.onrender.com
+#          ocs-worker  srv-da4cfds9v7es73b04kc0
+#          both deploy from  claude/ocs-migration-audit-phase-0-03a8qm
+#          ocs-api is the service Netlify proxies /api/* to (see netlify.toml)
+#
+#   STALE  one-contractor-solutions, one-contractor-worker  (deploy from main)
+#          Named below, and NOT serving traffic. one-contractor-solutions has
+#          no DATABASE_URL at all, so it cannot boot. It also holds its OWN
+#          AUTH_JWT_SECRET and INTEGRATION_ENCRYPTION_KEY, different from the
+#          live ones -- which means anything it did manage to write would be
+#          unreadable by the real service.
+#
+#   STALE  App-1ContractorSolution  (suspended, docker runtime)
+#
+# This divergence has already cost real time: configuration set "on Render per
+# render.yaml" lands on a service nobody is using, and the symptom is the live
+# API reporting a feature unconfigured while the dashboard shows it configured.
+# Set environment variables on ocs-api by its service id, not by the names in
+# this file, until the stale services are removed and this blueprint is made to
+# match what actually runs.
+#
 # Two services from one repository:
 #   one-contractor-solutions -- the HTTP API *and* the frontend. It serves the contractor
 #                  portal at / and the permit intake form at /intake, so the
