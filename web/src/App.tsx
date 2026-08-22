@@ -36,7 +36,6 @@ import Support from './pages/Support.tsx';
 import Notary from './pages/Notary.tsx';
 import Users from './pages/Users.tsx';
 import Settings from './pages/Settings.tsx';
-import Placeholder from './pages/Placeholder.tsx';
 
 export default function App() {
   const { user, loading, isStaff, needsSetup, refresh } = useAuth();

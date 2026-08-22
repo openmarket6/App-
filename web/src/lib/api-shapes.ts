@@ -116,6 +116,15 @@ export interface SigningStatusResponse {
   serviceLine: ServiceLine;
   verdict: SigningVerdict;
   labels: Record<SignableKind, string>;
+  /**
+   * Which documents this contractor's service line requires.
+   *
+   * Sent rather than derived on the page from `client.serviceLine`, which
+   * arrives from a different endpoint. If the two ever disagreed the screen
+   * would offer a list of agreements the verdict is not judging, and the step
+   * would sit at pending against documents nobody is counting.
+   */
+  required: SignableKind[];
 }
 
 // --- GET /drafting ---------------------------------------------------------

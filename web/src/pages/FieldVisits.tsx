@@ -276,7 +276,7 @@ export default function FieldVisits() {
       {visitsQ.data && visits.length === 0 && !visitsQ.data.note && (
         <EmptyState
           title="Nothing assigned"
-          body="No open site visits. New ones appear here as they are scheduled."
+          hint="No open site visits. New ones appear here as they are scheduled."
         />
       )}
 

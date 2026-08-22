@@ -263,10 +263,12 @@ export async function compatSigningRoutes(app: FastifyInstance): Promise<void> {
           /*
            * Which documents this line requires, sent alongside the verdict.
            *
-           * The screen offers a "send" button per kind and had no way to know
-           * which kinds apply, so it either offered all six -- including the
-           * managed-licence addendum to contractors who are not on that line --
-           * or hard-coded the list and drifted from the server's answer.
+           * The list and the verdict have to come from the same read of
+           * service_line. The screen would otherwise derive it from the client
+           * record it already has, which arrives from a different endpoint --
+           * and on any disagreement it would offer agreements this verdict is
+           * not judging, leaving the step pending against documents nobody is
+           * counting.
            */
           required: REQUIRED_SIGNABLES[company.serviceLine],
         };

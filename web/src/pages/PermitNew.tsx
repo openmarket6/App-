@@ -290,8 +290,6 @@ export default function PermitNew() {
       !!projectForm.jurisdictionId
     : !!existingProject;
 
-  const supervisionReady = !managed || (!!qualifyingAgentId && !!supervisorUserId);
-
   const blockers: string[] = [];
   if (!canCreate) blockers.push('Your role does not allow: permit:create.');
   if (!client) blockers.push('Choose the contractor this permit is filed under.');

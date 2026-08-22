@@ -16,7 +16,7 @@ import {
   type RequirementItem,
   type StatusEvent,
 } from '@flph/shared';
-import { api, get, patch, post } from '../lib/api.ts';
+import { get, patch, post } from '../lib/api.ts';
 import { useAuth } from '../lib/auth.tsx';
 import { fmtDate, fmtDateTime, humanEnum } from '../lib/format.ts';
 import { readFileAsUpload } from '../lib/upload.ts';

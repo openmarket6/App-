@@ -252,7 +252,7 @@ export default function DocumentsGenerate() {
     return (
       <EmptyState
         title="Not your area"
-        body="Producing a recordable instrument needs the document:generate capability. An administrator can grant it."
+        hint="Producing a recordable instrument needs the document:generate capability. An administrator can grant it."
       />
     );
   }

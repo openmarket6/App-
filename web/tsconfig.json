@@ -1,0 +1,45 @@
+{
+  /*
+   * The application had no typecheck at all.
+   *
+   * Vite builds with esbuild, which strips types without checking them, and
+   * there was no tsc step anywhere -- so a type error in any page compiled
+   * cleanly, deployed, and failed in the browser. Turning this on found nine,
+   * including `patch` never being imported into ContractorDetail, which meant
+   * placing or lifting a filing hold threw ReferenceError and took the panel
+   * down with it.
+   *
+   * `allowImportingTsExtensions` matches how this codebase writes its imports
+   * (`./api.ts`), which Vite resolves and tsc otherwise rejects.
+   */
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "types": ["vite/client"],
+
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+
+    "noEmit": true,
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+
+    /* Mirrors the alias in vite.config.ts. Two places, unavoidably -- one is
+     * how the bundler resolves it and one is how the checker does. */
+    "baseUrl": ".",
+    "paths": {
+      "@flph/shared": ["../src/shared/index.ts"],
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx", "vite.config.ts"]
+}

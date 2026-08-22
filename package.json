@@ -16,6 +16,7 @@
     "migrate": "tsx src/db/migrate.ts up",
     "migrate:status": "tsx src/db/migrate.ts status",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck:web": "npm run typecheck --prefix web",
     "test": "vitest run",
     "test:watch": "vitest"
   },

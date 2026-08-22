@@ -30,6 +30,7 @@ import EmptyState from '../components/EmptyState.tsx';
 import ErrorState, { errorMessage } from '../components/ErrorState.tsx';
 import Meter from '../components/Meter.tsx';
 import { LoadingPanel } from '../components/Spinner.tsx';
+import SignDocument from '../components/SignDocument.tsx';
 
 /**
  * The onboarding checklist.
@@ -125,6 +126,7 @@ function Checklist({
   isStaff: boolean;
   canEditClient: boolean;
 }) {
+  const { user } = useAuth();
   const complianceQ = useQuery({
     queryKey: ['compliance', client.id],
     queryFn: () => get<ComplianceListResponse>(`/compliance?clientId=${client.id}`),
@@ -341,6 +343,8 @@ function Checklist({
             compromised={signingVerdict.compromised}
             requests={signaturesQ.data?.requests ?? []}
             canSend={isStaff && canEditClient}
+            canSign={!isStaff && !!user && can(user.role, 'portal:sign_documents')}
+            required={signingQ.data?.required ?? REQUIRED_SIGNABLES[client.serviceLine]}
           />
         )}
       </Step>
@@ -571,6 +575,8 @@ function AgreementList({
   compromised,
   requests,
   canSend,
+  canSign,
+  required,
 }: {
   client: Client;
   missing: SignableKind[];
@@ -578,9 +584,11 @@ function AgreementList({
   compromised: SignableKind[];
   requests: SignatureListResponse['requests'];
   canSend: boolean;
+  canSign: boolean;
+  required: SignableKind[];
 }) {
   const qc = useQueryClient();
-  const required = REQUIRED_SIGNABLES[client.serviceLine];
+  const [signing, setSigning] = useState<string | null>(null);
 
   const send = useMutation({
     mutationFn: (kind: SignableKind) => post('/signing/requests', { clientId: client.id, kind }),
@@ -625,8 +633,32 @@ function AgreementList({
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 <span className={STEP_BADGE[state].cls}>{STEP_BADGE[state].label}</span>
-                {req && req.status !== 'SIGNED' && (
+                {/*
+                  * The half that was missing. The portal told contractors an
+                  * agreement was waiting for their signature and then offered
+                  * them nowhere to sign it.
+                  */}
+                {canSign && req && req.status !== 'SIGNED' && req.status !== 'VOIDED'
+                  && req.status !== 'DECLINED' && req.status !== 'EXPIRED' && (
+                  <button
+                    type="button"
+                    className="btn-primary px-2 py-1 text-[12px]"
+                    onClick={() => setSigning(req.id)}
+                  >
+                    Review and sign
+                  </button>
+                )}
+                {!canSign && req && req.status !== 'SIGNED' && (
                   <span className="text-[12px] text-ink-mute">Sent to {req.signerEmail}</span>
+                )}
+                {canSign && req && req.status === 'SIGNED' && (
+                  <button
+                    type="button"
+                    className="btn-ghost px-2 py-1 text-[12px]"
+                    onClick={() => setSigning(req.id)}
+                  >
+                    View
+                  </button>
                 )}
                 {canSend && !req && (
                   <button
@@ -643,6 +675,12 @@ function AgreementList({
           );
         })}
       </ul>
+
+      <SignDocument
+        requestId={signing}
+        open={signing !== null}
+        onClose={() => setSigning(null)}
+      />
     </div>
   );
 }

@@ -16,7 +16,7 @@ import {
   type PermitDocument,
   type SiteVisit,
 } from '@flph/shared';
-import { get, post } from '../lib/api.ts';
+import { get, patch, post } from '../lib/api.ts';
 import { useAuth } from '../lib/auth.tsx';
 import { daysAgo, fmtDate, fmtDateTime, humanEnum } from '../lib/format.ts';
 import { fmtBytes, readFileAsUpload } from '../lib/upload.ts';
