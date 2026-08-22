@@ -459,4 +459,75 @@ describeIfDb('what the API puts on the wire', () => {
       await app.close();
     }
   });
+
+  /*
+   * The invoice status filter, which accepted a value and ignored it.
+   *
+   * Worth a runtime test rather than only the static one: the filter has to run
+   * against the DERIVED status, and the two statuses people actually ask for --
+   * OVERDUE and PARTIAL -- are not values the status column can hold. A filter
+   * written in SQL would have passed a static check and still matched nothing.
+   */
+  it('filters invoices by the status a caller can actually see', async () => {
+    const c = client(ownerUrl!);
+    await c.connect();
+    try {
+      await c.query('delete from ocs.invoices where company_id = $1', [ALPHA]);
+      await c.query(
+        `insert into ocs.invoices (company_id, invoice_number, subtotal_cents,
+                                   total_cents, amount_paid_cents, status,
+                                   issued_on, due_on, paid_at)
+         values
+           -- paid in full
+           ($1, 9101, 10000, 10000, 10000, 'paid', current_date - 40,
+            current_date - 10, now()),
+           -- open, part paid: PARTIAL, which no column holds
+           ($1, 9102, 20000, 20000,  5000, 'open', current_date - 40,
+            current_date + 10, null),
+           -- open, unpaid, past its due date: OVERDUE, likewise derived
+           ($1, 9103, 30000, 30000,     0, 'open', current_date - 40,
+            current_date - 5, null)`,
+        [ALPHA],
+      );
+    } finally {
+      await c.end();
+    }
+
+    const app = await server();
+    try {
+      const login = await app.inject({ method: 'POST', url: '/api/auth/login', payload: ADMIN });
+      const token = JSON.parse(login.body).accessToken as string;
+      const auth = { authorization: `Bearer ${token}` };
+      const list = async (qs: string) => JSON.parse(
+        (await app.inject({ method: 'GET', url: `/api/billing/invoices${qs}`, headers: auth })).body,
+      );
+
+      const all = await list(`?clientId=${ALPHA}`);
+      expect(all.invoices).toHaveLength(3);
+
+      const paid = await list(`?clientId=${ALPHA}&status=PAID`);
+      expect(paid.invoices).toHaveLength(1);
+      expect(paid.invoices[0].status).toBe('PAID');
+
+      const partial = await list(`?clientId=${ALPHA}&status=PARTIAL`);
+      expect(partial.invoices).toHaveLength(1);
+      expect(partial.invoices[0].amountPaidCents).toBe(5000);
+
+      const overdue = await list(`?clientId=${ALPHA}&status=OVERDUE`);
+      expect(overdue.invoices).toHaveLength(1);
+      expect(overdue.invoices[0].totalCents).toBe(30000);
+
+      // Totals describe the set that was asked for, not the whole book.
+      expect(overdue.outstandingCents).toBe(30000);
+
+      // A status nobody uses is a 400 now, rather than being accepted and
+      // quietly returning everything.
+      const bad = await app.inject({
+        method: 'GET', url: `/api/billing/invoices?status=WHATEVER`, headers: auth,
+      });
+      expect(bad.statusCode).toBe(400);
+    } finally {
+      await app.close();
+    }
+  });
 });

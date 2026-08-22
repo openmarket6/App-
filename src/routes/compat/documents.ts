@@ -223,6 +223,17 @@ export async function compatDocumentsRoutes(app: FastifyInstance): Promise<void>
             lat: z.number().min(-90).max(90),
             lng: z.number().min(-180).max(180),
           }).nullable().optional(),
+          /*
+           * Accepted and honoured -- though both values land on the same stored
+           * category, because ocs.document_category has one photo value and
+           * this endpoint used to insert the literal 'photo' whatever was sent.
+           *
+           * So a photograph uploaded here as SUPERVISION_PHOTO is not
+           * distinguishable afterwards from a job photo. Photographs that have
+           * to stand as supervision evidence belong on
+           * POST /api/supervision/visits/:id/photos, which stores them against
+           * the visit with the capture time that makes them evidence.
+           */
           category: z.enum(['JOB_PHOTO', 'SUPERVISION_PHOTO']).default('JOB_PHOTO'),
         }),
         req.body,
@@ -279,7 +290,7 @@ export async function compatDocumentsRoutes(app: FastifyInstance): Promise<void>
              returning id`,
             [
               companyId, body.permitId ?? null, body.projectId ?? null,
-              body.fileName, 'photo',
+              body.fileName, TO_STORED[body.category] ?? 'photo',
               body.capturedAt ?? null,
               body.geo?.lat ?? null, body.geo?.lng ?? null,
               auth.userId,

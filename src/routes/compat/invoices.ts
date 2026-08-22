@@ -220,7 +220,18 @@ export async function compatInvoiceRoutes(app: FastifyInstance): Promise<void> {
       const q = parse(
         z.object({
           clientId: z.string().uuid().optional(),
-          status: z.string().max(20).optional(),
+          /*
+           * Filtered after presenting, not in SQL.
+           *
+           * PARTIAL and OVERDUE are derived from the relationship between an
+           * amount, a payment and a date -- neither is a value the status
+           * column can hold. A `where status = 'OVERDUE'` would have matched
+           * nothing while looking exactly like a working filter, and those two
+           * are the statuses anybody actually asks for.
+           */
+          status: z.enum([
+            'DRAFT', 'SENT', 'PARTIAL', 'OVERDUE', 'PAID', 'VOID',
+          ]).optional(),
         }),
         req.query,
         'query',
@@ -265,7 +276,12 @@ export async function compatInvoiceRoutes(app: FastifyInstance): Promise<void> {
             byInvoice.set(l.invoice_id, list);
           }
 
-          const invoices = rows.map((r) => present(r, byInvoice.get(r['id'] as string) ?? []));
+          const invoices = rows
+            .map((r) => present(r, byInvoice.get(r['id'] as string) ?? []))
+            // The parameter was accepted and then never applied, so every
+            // caller asking for one status got all of them and had no way to
+            // tell. Totals below describe the set that was asked for.
+            .filter((i) => !q.status || i.status === q.status);
 
           return {
             invoices,
