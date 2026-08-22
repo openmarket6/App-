@@ -367,6 +367,18 @@ export async function compatDocumentsRoutes(app: FastifyInstance): Promise<void>
           supersedesId: z.string().uuid().nullable().optional(),
           requirementKey: z.string().trim().max(120).nullable().optional(),
           submittedOnCycle: z.number().int().min(0).nullable().optional(),
+          /*
+           * The camera's own timestamp, not the upload time.
+           *
+           * The supervision screen has always sent this and this schema did not
+           * take it, so it was dropped and captured_at stored NULL -- on
+           * SUPERVISION_PHOTO uploads specifically, which are the ones where it
+           * matters most. A supervisor who photographs a roof at 9am and
+           * uploads at 6pm when they get signal has evidence of a 9am visit
+           * only if the 9am survives. Without it the file proves somebody
+           * uploaded a picture, which is not what this business sells.
+           */
+          capturedAt: z.string().datetime().nullable().optional(),
         }),
         req.body,
         'document',
@@ -413,13 +425,16 @@ export async function compatDocumentsRoutes(app: FastifyInstance): Promise<void>
           const doc = await tx.one<{ id: string }>(
             `insert into ocs.documents
                (company_id, permit_id, project_id, name, category, supersedes_id,
-                requirement_key, submitted_on_cycle, uploaded_by, version_count)
-             values ($1,$2,$3,$4,$5::ocs.document_category,$6,$7,$8,$9,1)
+                requirement_key, submitted_on_cycle, uploaded_by, version_count,
+                captured_at)
+             values ($1,$2,$3,$4,$5::ocs.document_category,$6,$7,$8,$9,1,
+                     $10::timestamptz)
              returning id`,
             [
               companyId, body.permitId ?? null, body.projectId ?? null,
               body.fileName, storedCategory, body.supersedesId ?? null,
               body.requirementKey ?? null, body.submittedOnCycle ?? null, auth.userId,
+              body.capturedAt ?? null,
             ],
           );
 

@@ -237,6 +237,19 @@ export async function compatNotaryRoutes(app: FastifyInstance): Promise<void> {
           provider: z.enum(PROVIDERS).nullable().optional(),
           scheduledFor: z.string().datetime().nullable().optional(),
           externalId: z.string().max(200).nullable().optional(),
+          /*
+           * Who is doing the act, and under what commission.
+           *
+           * The scheduling drawer has always sent these three and the schema
+           * was .strict(), so every attempt to schedule a notarization from
+           * the interface returned 400 -- not a silent drop, a hard refusal.
+           * They belong here: a notary session that does not say who will
+           * perform it is a diary entry, and the commission number is what
+           * makes the resulting certificate checkable years later.
+           */
+          notaryName: z.string().trim().max(200).nullable().optional(),
+          notaryCommissionNumber: z.string().trim().max(120).nullable().optional(),
+          notaryCommissionExpiresAt: z.string().datetime().nullable().optional(),
         }).strict(),
         req.body,
         'notarization',
@@ -267,7 +280,12 @@ export async function compatNotaryRoutes(app: FastifyInstance): Promise<void> {
                     type          = coalesce($5::ocs.notary_type, type),
                     provider      = case when $6::boolean then $7::ocs.notary_provider else provider end,
                     scheduled_for = case when $3::boolean then $4::timestamptz else scheduled_for end,
-                    external_id   = case when $8::boolean then $9 else external_id end
+                    external_id   = case when $8::boolean then $9 else external_id end,
+                    notary_name   = case when $10::boolean then $11 else notary_name end,
+                    notary_commission_number =
+                      case when $12::boolean then $13 else notary_commission_number end,
+                    notary_commission_expires_at =
+                      case when $14::boolean then $15::timestamptz else notary_commission_expires_at end
               where id = $1`,
             [
               id,
@@ -279,6 +297,12 @@ export async function compatNotaryRoutes(app: FastifyInstance): Promise<void> {
               body.provider ? down(body.provider) : null,
               body.externalId !== undefined,
               body.externalId ?? null,
+              body.notaryName !== undefined,
+              body.notaryName ?? null,
+              body.notaryCommissionNumber !== undefined,
+              body.notaryCommissionNumber ?? null,
+              body.notaryCommissionExpiresAt !== undefined,
+              body.notaryCommissionExpiresAt ?? null,
             ],
           );
         } catch (err) {

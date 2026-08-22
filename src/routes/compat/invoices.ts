@@ -301,14 +301,25 @@ export async function compatInvoiceRoutes(app: FastifyInstance): Promise<void> {
           })).min(1).max(200),
           dueAt: z.string().date().optional(),
           memo: z.string().max(2000).optional(),
+          /*
+           * Bill the agency's own fees on to the contractor.
+           *
+           * The create drawer has always had this switch, on by default, and
+           * sent it here where nothing read it -- and `permitIds` was accepted
+           * and never used either. So selecting permits and ticking the box did
+           * exactly nothing, and the invoice went out without the government
+           * fees somebody believed they had just added.
+           *
+           * Honoured now, and as PASS-THROUGH lines specifically, which is the
+           * one rule this file exists to keep: our fee and the agency's fee are
+           * never mixed. A contractor has to be able to see which of the two
+           * they are being asked for.
+           */
+          includeAgencyFees: z.boolean().default(false),
         }),
         req.body,
         'invoice',
       );
-
-      // Totals from the shared function, so this invoice adds up the same way
-      // the screen that requested it said it would.
-      const totals = invoiceTotals(body.lines as InvoiceLine[]);
 
       const result = await withServiceContext(
         async (tx) => {
@@ -317,6 +328,50 @@ export async function compatInvoiceRoutes(app: FastifyInstance): Promise<void> {
             [body.clientId],
           );
           if (!company) throw notFound('Contractor');
+
+          /*
+           * Agency fees are read from the permits themselves, never taken from
+           * the request. A fee the contractor is asked to reimburse has to be
+           * the fee the agency actually charged, and a number that arrived in a
+           * request body is a number somebody could have typed.
+           *
+           * Only permits belonging to THIS contractor, and only ones carrying a
+           * recorded fee: a permit whose fee is not known yet is silently
+           * absent rather than billed at zero, because a zero line reads as
+           * "the agency charged nothing".
+           */
+          const lines: InvoiceLine[] = [...(body.lines as InvoiceLine[])];
+          if (body.includeAgencyFees && body.permitIds && body.permitIds.length > 0) {
+            const feeRows = await tx.many<{
+              id: string; fee_cents: string; permit_number: string | null;
+            }>(
+              `select p.id,
+                      round(p.fee_amount * 100)::bigint::text as fee_cents,
+                      p.permit_number
+                 from ocs.permits p
+                where p.company_id = $1
+                  and p.id = any($2::uuid[])
+                  and p.deleted_at is null
+                  and p.fee_amount is not null
+                  and p.fee_amount > 0
+                order by p.created_at`,
+              [body.clientId, body.permitIds],
+            );
+            for (const row of feeRows) {
+              lines.push({
+                description: `Agency permit fee${row.permit_number ? ` — ${row.permit_number}` : ''}`,
+                quantity: 1,
+                unitCents: Number(row.fee_cents),
+                passThrough: true,
+                permitId: row.id,
+              } as InvoiceLine);
+            }
+          }
+
+          // Totals from the shared function, so this invoice adds up the same
+          // way the screen that requested it said it would -- now including any
+          // agency fees appended above.
+          const totals = invoiceTotals(lines);
 
           const invoice = await tx.one<{ id: string }>(
             `insert into ocs.invoices
@@ -333,7 +388,7 @@ export async function compatInvoiceRoutes(app: FastifyInstance): Promise<void> {
             ],
           );
 
-          for (const [i, line] of body.lines.entries()) {
+          for (const [i, line] of lines.entries()) {
             await tx.query(
               `insert into ocs.invoice_line_items
                  (company_id, invoice_id, description, quantity, unit_price_cents,

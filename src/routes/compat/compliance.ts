@@ -450,11 +450,27 @@ export async function compatComplianceRoutes(app: FastifyInstance): Promise<void
     async (req) => {
       const auth = req.apiAuth!;
       const { id } = parse(z.object({ id: z.string().uuid() }), req.params, 'parameters');
-      const body = parse(
-        z.object({ note: z.string().trim().min(1).max(2000) }),
+      /*
+       * The waive drawer sends `waivedReason`; this took `note`. Same fault as
+       * the review endpoint above -- a required field under a name the caller
+       * does not use is a 400 on every attempt, and waiving is how a legitimate
+       * exception gets recorded, so the exception simply could not be recorded.
+       */
+      const raw = parse(
+        z.object({
+          note: z.string().trim().min(1).max(2000).optional(),
+          waivedReason: z.string().trim().min(1).max(2000).optional(),
+        }),
         req.body,
         'waiver',
       );
+      const body = { note: raw.note ?? raw.waivedReason ?? '' };
+      if (!body.note) {
+        throw badRequest(
+          'Say why this requirement is being waived. A waiver with no reason is ' +
+            'indistinguishable from an oversight when somebody reads it back.',
+        );
+      }
 
       return withServiceContext(
         async (tx) => {
