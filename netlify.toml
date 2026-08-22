@@ -12,10 +12,20 @@
 
 [build]
   publish = "public"
-  # Nothing to compile: the React bundle in public/assets is already built, and
-  # the TypeScript in src/ is the backend, which Render builds. An empty command
-  # keeps Netlify from trying to build a server it will never run.
-  command = ""
+  # The application is COMPILED HERE, from web/. It used to be a bundle someone
+  # built once and committed, with no source in the repository at all -- which
+  # meant the screen could never change no matter what the backend gained. Every
+  # endpoint added after that build was invisible, and nobody could tell from
+  # looking at the site that anything was missing.
+  #
+  # `vite build` writes into ../public alongside the hand-written marketing
+  # pages and rewrites app.html with the current content-hashed asset names, so
+  # the deployed interface is now always the interface in this repository.
+  command = "cd web && npm install && npm run build"
+
+[build.environment]
+  # Pinned so a Netlify default bump cannot break the build on an unrelated day.
+  NODE_VERSION = "20"
 
 # -----------------------------------------------------------------------------
 # THE IMPORTANT PART: proxy /api/* to Render.
