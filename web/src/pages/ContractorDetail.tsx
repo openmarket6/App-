@@ -29,7 +29,7 @@ import type {
   SignatureListResponse,
   SignatureRequestRow,
   SiteVisitListResponse,
-  SubscriptionListResponse,
+  SubscriptionResponse,
 } from '../lib/api-shapes.ts';
 import type { PermitListResponse, PermitRow } from '../lib/types.ts';
 import ComplianceBadge, { complianceRowClass, expiryPhrase } from '../components/ComplianceBadge.tsx';
@@ -196,13 +196,19 @@ export default function ContractorDetail() {
 // --------------------------------------------------------------------------
 
 function OverviewTab({ client, canSuspend }: { client: Client; canSuspend: boolean }) {
+  /*
+   * Singular, and one record rather than a list: a contractor has at most one
+   * live subscription, which the endpoint enforces. Asking for a list and
+   * taking [0] read as though there might be several, and pointed at an
+   * address that does not exist.
+   */
   const subsQ = useQuery({
-    queryKey: ['subscriptions', client.id],
-    queryFn: () => get<SubscriptionListResponse>(`/billing/subscriptions?clientId=${client.id}`),
+    queryKey: ['subscription', client.id],
+    queryFn: () => get<SubscriptionResponse>(`/billing/subscription?clientId=${client.id}`),
     enabled: client.serviceLine === 'MANAGED_LICENSE',
   });
 
-  const subscription = subsQ.data?.subscriptions[0] ?? null;
+  const subscription = subsQ.data?.subscription ?? null;
 
   return (
     <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
