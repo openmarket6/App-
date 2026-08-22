@@ -33,7 +33,7 @@ import { describe, it, expect } from 'vitest';
 import { readdir, readFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { NOT_MIGRATED_AREAS } from '../src/routes/compat/api.js';
+import { NOT_MIGRATED_AREAS } from '../src/routes/compat/not-migrated.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
