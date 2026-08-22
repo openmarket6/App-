@@ -341,21 +341,63 @@ export async function compatComplianceRoutes(app: FastifyInstance): Promise<void
     async (req) => {
       const auth = req.apiAuth!;
       const { id } = parse(z.object({ id: z.string().uuid() }), req.params, 'parameters');
+      /*
+       * Speaks the screen's vocabulary as well as its own.
+       *
+       * The review drawer sends {decision: 'APPROVE'|'REJECT', reviewNote,
+       * effectiveDate, expiresAt}. This endpoint accepted
+       * {decision: 'accept'|'reject', note} and nothing else -- so every
+       * approval from the UI returned 400, and since no permit can be filed
+       * until compliance is accepted, onboarding could not complete at all.
+       * The dates were worse than rejected: they were dropped in silence, and
+       * an expiry date is what drives every renewal warning this system sends.
+       *
+       * Both spellings are taken, because this is the compat layer and its job
+       * is to absorb exactly this kind of drift rather than break on it.
+       */
       const body = parse(
         z.object({
-          decision: z.enum(['accept', 'reject']),
-          note: z.string().trim().max(2000).optional(),
+          decision: z.string().trim(),
+          note: z.string().trim().max(2000).nullable().optional(),
+          reviewNote: z.string().trim().max(2000).nullable().optional(),
+          effectiveDate: z.string().nullable().optional(),
+          expiresAt: z.string().nullable().optional(),
         }),
         req.body,
         'review',
       );
 
-      if (body.decision === 'reject' && !body.note) {
+      const decision = body.decision.toLowerCase();
+      const accepted = decision === 'accept' || decision === 'approve' || decision === 'approved';
+      const rejected = decision === 'reject' || decision === 'rejected';
+      if (!accepted && !rejected) {
+        throw badRequest(
+          `Unknown review decision "${body.decision}". Use approve or reject.`,
+        );
+      }
+
+      const note = body.note ?? body.reviewNote ?? null;
+
+      if (rejected && !note) {
         throw badRequest(
           'Say why it was rejected. A rejection with no reason generates the phone ' +
             'call this system exists to prevent.',
         );
       }
+
+      /*
+       * A date the reviewer corrected is applied, not ignored. `coalesce` keeps
+       * whatever is on file when the drawer sends nothing, so reviewing without
+       * touching the dates cannot blank them.
+       */
+      const toDate = (v: string | null | undefined): string | null => {
+        if (!v) return null;
+        const t = Date.parse(v);
+        if (!Number.isFinite(t)) throw badRequest(`"${v}" is not a date this can read.`);
+        return new Date(t).toISOString().slice(0, 10);
+      };
+      const effectiveDate = toDate(body.effectiveDate);
+      const expiresAt = toDate(body.expiresAt);
 
       return withServiceContext(
         async (tx) => {
@@ -364,12 +406,14 @@ export async function compatComplianceRoutes(app: FastifyInstance): Promise<void
                 set decision = $2::ocs.compliance_decision,
                     decision_note = $3,
                     decided_by = $4,
-                    decided_at = now()
+                    decided_at = now(),
+                    effective_date = coalesce($5::date, c.effective_date),
+                    expires_at = coalesce($6::date, c.expires_at)
               where c.id = $1
               returning ${SELECT}`,
             [
-              id, body.decision === 'accept' ? 'accepted' : 'rejected',
-              body.note ?? null, auth.userId,
+              id, accepted ? 'accepted' : 'rejected',
+              note, auth.userId, effectiveDate, expiresAt,
             ],
           );
           if (!row) throw notFound('Compliance record');
@@ -382,7 +426,7 @@ export async function compatComplianceRoutes(app: FastifyInstance): Promise<void
             entityType: 'compliance_item',
             entityId: id,
             summary: `${COMPLIANCE_LABELS[row.kind] ?? row.kind} ${body.decision}ed`,
-            after: { decision: body.decision, note: body.note ?? null },
+            after: { decision: accepted ? 'accepted' : 'rejected', note },
             requestId: req.id,
             ipAddress: clientIp(req),
           });
