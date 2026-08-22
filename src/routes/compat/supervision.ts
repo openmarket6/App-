@@ -100,6 +100,15 @@ const VISIT_SELECT = `
   v.signed_off_by as "signedOffBy",
   v.required_photo_count as "requiredPhotoCount",
   v.photo_count as "photoCount",
+  v.amended_at as "amendedAt",
+  v.amended_by as "amendedBy",
+  v.amendment_reason as "amendmentReason",
+  coalesce(
+    (select array_agg(vp.document_id order by vp.sequence)
+       from ocs.supervision_visit_photos vp
+      where vp.visit_id = v.id),
+    '{}'::uuid[]
+  ) as "photoDocumentIds",
   v.created_at as "createdAt"
 `;
 
@@ -133,10 +142,10 @@ function toSiteVisit(row: VisitRow): SiteVisit {
       : null,
     observations: row.findings ?? '',
     directionGiven: (row['correctionsRequired'] as string | null) ?? null,
-    photoDocumentIds: [],
-    amendedAt: null,
-    amendedBy: null,
-    amendmentReason: null,
+    photoDocumentIds: (row['photoDocumentIds'] as string[] | null) ?? [],
+    amendedAt: (row['amendedAt'] as string | null) ?? null,
+    amendedBy: (row['amendedBy'] as string | null) ?? null,
+    amendmentReason: (row['amendmentReason'] as string | null) ?? null,
   };
 }
 
@@ -272,6 +281,232 @@ export async function compatSupervisionRoutes(app: FastifyInstance): Promise<voi
         });
 
         return { permitId, ...verdict };
+      });
+    },
+  );
+
+  /**
+   * The list the Supervision page reads.
+   *
+   * It lived in compat/api.ts and returned the raw milestone row, whose column
+   * names share almost nothing with the SiteVisit the frontend renders -- so
+   * every field on the page came out undefined. It belongs here, beside the
+   * adapter that already knows how to speak the frontend's shape.
+   */
+  app.get(
+    '/api/supervision/visits',
+    { preHandler: [requireApiAuth, requireCapability('supervision:read')] },
+    async (req) => {
+      const q = parse(
+        z.object({
+          clientId: z.string().uuid().optional(),
+          permitId: z.string().uuid().optional(),
+        }),
+        req.query,
+        'query',
+      );
+
+      return scoped(
+        req,
+        async (tx, companyId) => {
+          const rows = await tx.many<VisitRow>(
+            `select ${VISIT_SELECT} ${VISIT_FROM}
+              where ($1::uuid is null or v.company_id = $1::uuid)
+                and ($2::uuid is null or e.permit_id = $2::uuid)
+              order by coalesce(v.checked_in_at, v.scheduled_for, v.created_at) desc nulls last
+              limit 300`,
+            [companyId, q.permitId ?? null],
+          );
+          const visits = rows.map(toSiteVisit);
+          return { visits, total: visits.length };
+        },
+        q.clientId ?? null,
+      );
+    },
+  );
+
+  /**
+   * Log a visit that nobody scheduled.
+   *
+   * The milestone plan covers the visits a job is known to need. This covers
+   * the rest -- the trip made because somebody called -- which is most of the
+   * supervision that actually happens and, until now, could not be recorded at
+   * all. It is stored as a visit like any other so it lands in the same
+   * evidence trail, with a milestone code of its own so it can never collide
+   * with a planned milestone (the table makes those unique per engagement) and
+   * is_mandatory false so it does not distort what the plan says is required.
+   */
+  app.post(
+    '/api/supervision/visits',
+    { preHandler: [requireApiAuth, requireCapability('supervision:log')] },
+    async (req, reply) => {
+      const auth = req.apiAuth!;
+      const body = parse(
+        z.object({
+          permitId: z.string().uuid(),
+          purpose: z.enum(SITE_VISIT_PURPOSES),
+          occurredAt: z.string().datetime(),
+          observations: z.string().trim().min(1, 'Say what was observed'),
+          directionGiven: z.string().trim().nullable().optional(),
+          photoDocumentIds: z.array(z.string().uuid()).default([]),
+          location: z
+            .object({
+              lat: z.number().min(-90).max(90),
+              lng: z.number().min(-180).max(180),
+              accuracyM: z.number().min(0).nullable().optional(),
+            })
+            .nullable()
+            .optional(),
+        }),
+        req.body,
+        'site visit',
+      );
+
+      const created = await scoped(req, async (tx, companyId) => {
+        const engagement = await tx.one<{ id: string; company_id: string }>(
+          `select id, company_id from ocs.supervision_engagements
+            where permit_id = $1 and ($2::uuid is null or company_id = $2::uuid)
+            order by created_at desc limit 1`,
+          [body.permitId, companyId],
+        );
+        if (!engagement) {
+          throw badRequest(
+            'That permit has no supervision engagement yet, so there is nothing to attach a visit to.',
+          );
+        }
+
+        const supervisorId = await supervisorIdFor(tx, auth.userId);
+
+        /*
+         * Unique per engagement, and it round-trips: purposeOf reads the
+         * leading segment back out, so an ad-hoc visit still reports the
+         * purpose the supervisor chose rather than defaulting to PROGRESS.
+         */
+        const code = `${body.purpose.toLowerCase()}-adhoc-${Date.now().toString(36)}`;
+
+        const row = await tx.one<VisitRow>(
+          `insert into ocs.supervision_visits
+             (company_id, engagement_id, milestone_code, milestone_name, is_mandatory,
+              status, supervisor_id, checked_in_at, check_in_latitude, check_in_longitude,
+              findings, corrections_required, signed_off_at, signed_off_by, signature_name)
+           values ($1, $2, $3, $4, false, 'completed', $5, $6, $7, $8, $9, $10, now(), $11, $12)
+           returning id`,
+          [
+            engagement.company_id,
+            engagement.id,
+            code,
+            SITE_VISIT_PURPOSE_LABELS[body.purpose],
+            supervisorId,
+            body.occurredAt,
+            body.location?.lat ?? null,
+            body.location?.lng ?? null,
+            body.observations,
+            body.directionGiven?.trim() || null,
+            auth.userId,
+            auth.email,
+          ],
+        );
+
+        for (const [i, documentId] of body.photoDocumentIds.entries()) {
+          await tx.query(
+            `insert into ocs.supervision_visit_photos
+               (company_id, visit_id, document_id, sequence)
+             values ($1, $2, $3, $4)`,
+            [engagement.company_id, row!.id, documentId, i],
+          );
+        }
+        if (body.photoDocumentIds.length) {
+          await tx.query(
+            `update ocs.supervision_visits set photo_count = $2 where id = $1`,
+            [row!.id, body.photoDocumentIds.length],
+          );
+        }
+
+        await writeAudit(tx, {
+          companyId: engagement.company_id,
+          actorUserId: auth.userId,
+          actorEmail: auth.email,
+          action: 'supervision.visit_logged',
+          entityType: 'supervision_visit',
+          entityId: row!.id,
+          summary: `Unscheduled ${SITE_VISIT_PURPOSE_LABELS[body.purpose]} logged`,
+          requestId: req.id,
+          ipAddress: clientIp(req),
+        });
+
+        const full = await tx.one<VisitRow>(
+          `select ${VISIT_SELECT} ${VISIT_FROM} where v.id = $1`,
+          [row!.id],
+        );
+        return toSiteVisit(full!);
+      });
+
+      reply.code(201);
+      return { visit: created };
+    },
+  );
+
+  /**
+   * Amend a visit's narrative.
+   *
+   * Never silent: the reason and the author are stored on the row, and the
+   * page shows them. A site record that can be edited without trace is worth
+   * nothing the first time somebody disputes what happened.
+   */
+  app.patch(
+    '/api/supervision/visits/:id',
+    { preHandler: [requireApiAuth, requireCapability('supervision:log')] },
+    async (req) => {
+      const auth = req.apiAuth!;
+      const { id } = parse(z.object({ id: z.string().uuid() }), req.params, 'parameters');
+      const body = parse(
+        z.object({
+          amendmentReason: z.string().trim().min(1, 'Amendments need a reason'),
+          observations: z.string().trim().min(1, 'Say what was observed'),
+          directionGiven: z.string().trim().nullable().optional(),
+        }),
+        req.body,
+        'amendment',
+      );
+
+      return scoped(req, async (tx, companyId) => {
+        const existing = await tx.one<{ id: string; company_id: string }>(
+          `select id, company_id from ocs.supervision_visits
+            where id = $1 and ($2::uuid is null or company_id = $2::uuid)
+            for update`,
+          [id, companyId],
+        );
+        if (!existing) throw notFound('Site visit');
+
+        await tx.query(
+          `update ocs.supervision_visits
+              set findings = $2,
+                  corrections_required = $3,
+                  amended_at = now(),
+                  amended_by = $4,
+                  amendment_reason = $5,
+                  updated_at = now()
+            where id = $1`,
+          [id, body.observations, body.directionGiven?.trim() || null, auth.userId, body.amendmentReason],
+        );
+
+        await writeAudit(tx, {
+          companyId: existing.company_id,
+          actorUserId: auth.userId,
+          actorEmail: auth.email,
+          action: 'supervision.visit_amended',
+          entityType: 'supervision_visit',
+          entityId: id,
+          summary: `Visit narrative amended: ${body.amendmentReason}`,
+          requestId: req.id,
+          ipAddress: clientIp(req),
+        });
+
+        const full = await tx.one<VisitRow>(
+          `select ${VISIT_SELECT} ${VISIT_FROM} where v.id = $1`,
+          [id],
+        );
+        return { visit: toSiteVisit(full!) };
       });
     },
   );

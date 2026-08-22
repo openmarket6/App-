@@ -423,44 +423,6 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
   // Supervision — site visits and photographs
   // ---------------------------------------------------------------------------
 
-  app.get('/api/supervision/visits', { preHandler: [requireApiAuth, requireCapability('supervision:read')] }, async (req) => {
-    const q = parse(
-      z.object({
-        clientId: z.string().uuid().optional(),
-        permitId: z.string().uuid().optional(),
-      }),
-      req.query,
-      'query',
-    );
-
-    return scoped(req, async (tx, companyId) => {
-      const rows = await tx.many(
-        `select v.id, v.company_id as "clientId", v.engagement_id as "engagementId",
-                v.milestone_code as "milestoneCode", v.milestone_name as "milestoneName",
-                v.status::text, v.is_mandatory as "isMandatory",
-                v.scheduled_for as "scheduledFor",
-                v.checked_in_at as "checkedInAt", v.checked_out_at as "checkedOutAt",
-                v.distance_from_site_meters as "distanceFromSiteMeters",
-                v.findings, v.work_approved as "workApproved",
-                v.corrections_required as "correctionsRequired",
-                v.signed_off_at as "signedOffAt", v.signature_name as "signatureName",
-                v.photo_count as "photoCount",
-                v.required_photo_count as "requiredPhotoCount",
-                v.required_photo_types as "requiredPhotoTypes",
-                e.permit_id as "permitId", e.site_address as "siteAddress",
-                s.display_name as "supervisorName"
-           from ocs.supervision_visits v
-           join ocs.supervision_engagements e on e.id = v.engagement_id
-           left join ocs.supervisors s on s.id = v.supervisor_id
-          where ($1::uuid is null or v.company_id = $1::uuid)
-            and ($2::uuid is null or e.permit_id = $2::uuid)
-          order by coalesce(v.checked_in_at, v.scheduled_for) desc nulls last
-          limit 300`,
-        [companyId, q.permitId ?? null],
-      );
-      return { visits: rows, total: rows.length };
-    }, q.clientId ?? null);
-  });
 
   // ---------------------------------------------------------------------------
   // Users and role assignment
