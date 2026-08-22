@@ -120,8 +120,15 @@ export const DOCUMENT_LABELS: Record<RequiredDocumentType, string> = {
   other: 'Other supporting document',
 };
 
-/** Fla. Stat. 713.13 threshold, in cents to match valuation_cents. */
-export const NOC_THRESHOLD_CENTS = 250_000;
+/**
+ * Fla. Stat. 713.13 threshold, in cents to match valuation_cents.
+ *
+ * Re-exported from the shared definition so the filing gate and the
+ * contractor's checklist cannot drift apart. They had: this gate enforced
+ * $2,500 while the checklist only asked for an NOC above $250,000.
+ */
+export { NOC_THRESHOLD_CENTS } from '../shared/requirements.js';
+import { NOC_THRESHOLD_CENTS } from '../shared/requirements.js';
 
 /** Trades whose product must be approved for wind-borne debris resistance. */
 const WIND_BORNE_TYPES = new Set<PermitType>([

@@ -84,6 +84,18 @@ export interface RequirementContext {
 
 const HIGH_VALUATION_CENTS = 250_000_00;
 
+/**
+ * The Notice of Commencement threshold, in cents.
+ *
+ * Shared so the contractor's checklist and the filing gate read the same
+ * number. They did not, and the gap was two orders of magnitude.
+ *
+ * CONFIRM THIS FIGURE WITH COUNSEL before relying on it. Florida has amended
+ * lien-law thresholds more than once, and this file is not a substitute for
+ * the statute.
+ */
+export const NOC_THRESHOLD_CENTS = 250_000;
+
 export function buildRequirements(ctx: RequirementContext): RequirementItem[] {
   const items = new Map<string, RequirementItem>();
   const put = (i: RequirementItem) => items.set(i.key, i);
@@ -118,7 +130,37 @@ export function buildRequirements(ctx: RequirementContext): RequirementItem[] {
 
   if (p.valuationCents >= HIGH_VALUATION_CENTS) {
     put({ key: 'threshold_inspector', label: 'Special / threshold inspection plan', detail: null, required: false, source: 'conditional', because: 'Valuation over $250,000' });
-    put({ key: 'notice_of_commencement', label: 'Recorded Notice of Commencement', detail: 'F.S. 713.135 — required before the first inspection on jobs over $5,000.', required: true, source: 'conditional', because: 'Valuation over the NOC threshold' });
+  }
+
+  /*
+   * The Notice of Commencement threshold, and why it is its own branch.
+   *
+   * This rule used to sit INSIDE the block above, so a contractor was only
+   * told they needed an NOC on a job over $250,000 -- while the label on that
+   * same line claimed the threshold was $5,000, and the filing gate in
+   * domain/permitIntake.ts enforced $2,500.
+   *
+   * A $50,000 re-roof therefore showed no NOC on the contractor's checklist
+   * and was then refused at filing. Worse, if the checklist is the thing people
+   * trust, the NOC gets missed on a job that legally needs one -- and a missing
+   * or defective Notice of Commencement is not paperwork. It can stop the first
+   * inspection and it bears on lien rights.
+   *
+   * One constant now, shared with the filing gate, so the checklist and the
+   * gate cannot disagree again.
+   */
+  if (p.valuationCents > NOC_THRESHOLD_CENTS) {
+    put({
+      key: 'notice_of_commencement',
+      label: 'Recorded Notice of Commencement',
+      detail:
+        'Fla. Stat. 713.13. Record it with the county clerk and post a certified ' +
+        'copy on the job site — the building department will not perform the first ' +
+        'inspection without it.',
+      required: true,
+      source: 'conditional',
+      because: `Valuation over $${(NOC_THRESHOLD_CENTS / 100).toLocaleString('en-US')}`,
+    });
   }
 
   if (j.paperOnly) {
