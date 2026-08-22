@@ -1091,26 +1091,46 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
    */
   const NOT_MIGRATED = NOT_MIGRATED_AREAS;
 
+  /*
+   * What each stub should actually say.
+   *
+   * Every one of them claimed the area was "still available on the previous
+   * Netlify deployment". That deployment is gone — this one replaced it — so
+   * the sentence sent anybody who read it looking for a system that does not
+   * exist. A 501 that lies about the remedy is worse than a bare 501.
+   */
+  const STUB_REASON: Record<string, string> = {
+    signing:
+      'Electronic signature is not built. It is waiting on a choice of provider ' +
+      '(DocuSign or PandaDoc). Documents can be generated and downloaded in the ' +
+      'meantime from Documents & Compliance.',
+    connectors:
+      'The connector roadmap screen is not built on this backend. The jurisdiction ' +
+      'gate data it reads exists only inside the frontend bundle, and the ' +
+      'municipalities table has no key to join it on — so serving it needs a ' +
+      'decision about where that dataset lives, not just a route.',
+    integrations:
+      'Integration summary and roadmap are not built on this backend, for the same ' +
+      'reason as connectors.',
+    google:
+      'Google Drive was dropped from the product. This is not pending — it is not ' +
+      'happening, and the screen has been removed.',
+  };
+
+  const stub = (area: string) => ({
+    error: 'not_migrated',
+    area,
+    message: STUB_REASON[area] ?? `The "${area}" area is not available on this backend.`,
+  });
+
   for (const area of NOT_MIGRATED) {
     app.all(`/api/${area}`, auth, async (_req, reply) => {
       reply.code(501);
-      return {
-        error: 'not_migrated',
-        area,
-        message:
-          `The "${area}" area has not been migrated to the new backend yet. ` +
-          'It is still available on the previous Netlify deployment.',
-      };
+      return stub(area);
     });
     app.all(`/api/${area}/*`, auth, async (_req, reply) => {
       reply.code(501);
-      return {
-        error: 'not_migrated',
-        area,
-        message:
-          `The "${area}" area has not been migrated to the new backend yet. ` +
-          'It is still available on the previous Netlify deployment.',
-      };
+      return stub(area);
     });
   }
 
@@ -1123,7 +1143,9 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
     notMigrated: NOT_MIGRATED,
     note:
       'Migrated areas are backed by Postgres with row-level tenant isolation. ' +
-      'Everything else still runs on the previous Netlify deployment.',
+      'The areas listed as not migrated are not running anywhere else — the ' +
+      'previous Netlify deployment no longer exists. Each returns 501 with the ' +
+      'reason it is unbuilt.',
   }));
 }
 
