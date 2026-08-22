@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { useAuth } from '../lib/auth.tsx';
-import { ApiError } from '../lib/api.ts';
+import { ApiError, api } from '../lib/api.ts';
 
 export default function Login() {
   const { signIn } = useAuth();
@@ -8,6 +8,8 @@ export default function Login() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -87,6 +89,51 @@ export default function Login() {
           <button type="submit" disabled={busy} className="btn-primary w-full mt-6">
             {busy ? 'Signing in…' : 'Sign in'}
           </button>
+
+          {/*
+            * The reset request answers identically whether or not the address
+            * belongs to an account, so this says "if that address has one" --
+            * promising an email that may never arrive would read as a bug to
+            * the one person the vagueness is protecting.
+            */}
+          <div className="mt-3 text-center">
+            {sent ? (
+              <p className="text-[12px] text-good">
+                If that address has an account, a reset link is on its way. It expires in an hour.
+              </p>
+            ) : (
+              <button
+                type="button"
+                className="link text-[12px] disabled:opacity-60"
+                disabled={sending}
+                onClick={async () => {
+                  if (!email.trim()) {
+                    setError('Enter your email address first, then choose "Forgot your password?".');
+                    return;
+                  }
+                  setSending(true);
+                  setError(null);
+                  try {
+                    await api('/auth/forgot-password', {
+                      method: 'POST',
+                      body: { email: email.trim() },
+                      raw: true,
+                    });
+                    setSent(true);
+                  } catch {
+                    // The endpoint is deliberately uniform; a network failure
+                    // is the only thing that can land here, and re-showing the
+                    // link is more useful than an error about it.
+                    setSent(true);
+                  } finally {
+                    setSending(false);
+                  }
+                }}
+              >
+                {sending ? 'Sending…' : 'Forgot your password?'}
+              </button>
+            )}
+          </div>
 
           <p className="mt-6 text-xs text-ink-mute leading-relaxed">
             There is no self-service sign-up. If you are a contractor and need access, ask your coordinator to send an

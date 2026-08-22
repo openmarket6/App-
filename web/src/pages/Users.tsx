@@ -343,6 +343,33 @@ function RoleControl({
   const [resentEmailed, setResentEmailed] = useState(false);
   const [resentCopied, setResentCopied] = useState(false);
 
+  /*
+   * A reset is the resend-invite of an account that is past its invitation.
+   * Same shape deliberately: issue, then show the link, because email may not
+   * be configured and a reset nobody can deliver is no reset at all.
+   */
+  const [resetUrl, setResetUrl] = useState<string | null>(null);
+  const [resetNote, setResetNote] = useState<string | null>(null);
+  const [resetCopied, setResetCopied] = useState(false);
+
+  const reset = useMutation({
+    mutationFn: () =>
+      post<{ emailed?: boolean; emailError?: string | null; resetPath?: string | null }>(
+        `/users/${row.id}/reset-password`,
+        {},
+      ),
+    onSuccess: (data) => {
+      setResetCopied(false);
+      setResetUrl(inviteLink(data?.resetPath));
+      setResetNote(
+        data?.emailed
+          ? `Emailed to ${row.email}. The link below is the same one, in case it does not arrive.`
+          : 'Could not email it — send this link to them yourself. It expires in an hour.',
+      );
+      invalidate();
+    },
+  });
+
   const resend = useMutation({
     mutationFn: () =>
       post<{ acceptPath?: string | null; emailed?: boolean }>(`/users/${row.id}/resend-invite`, {}),
@@ -370,9 +397,9 @@ function RoleControl({
 
   return (
     <div className="min-w-[220px] space-y-1.5">
-      {(assign.isError || setActive.isError || resend.isError) && (
+      {(assign.isError || setActive.isError || resend.isError || reset.isError) && (
         <ErrorState
-          error={assign.error ?? setActive.error ?? resend.error}
+          error={assign.error ?? setActive.error ?? resend.error ?? reset.error}
           compact
           title="Could not apply that change"
         />
@@ -446,6 +473,17 @@ function RoleControl({
             {resend.isPending ? 'Reissuing…' : 'Reissue invite'}
           </button>
         )}
+        {row.hasPassword && canInvite && (
+          <button
+            type="button"
+            className="btn-ghost px-2 py-1 text-[12px]"
+            disabled={reset.isPending}
+            onClick={() => reset.mutate()}
+            title="Issues a one-hour link. You never see or choose their password."
+          >
+            {reset.isPending ? 'Issuing…' : 'Send password reset'}
+          </button>
+        )}
         {canInvite && (
           <button
             type="button"
@@ -458,6 +496,30 @@ function RoleControl({
           </button>
         )}
       </div>
+
+      {resetUrl && (
+        <div className="space-y-1 rounded-md border border-good/20 bg-good-soft px-2.5 py-2">
+          <p className="text-[11px] text-good leading-snug">{resetNote}</p>
+          <div className="flex gap-1.5">
+            <input
+              readOnly
+              className="input py-1 font-mono text-[11px]"
+              value={resetUrl}
+              onFocus={(e) => e.currentTarget.select()}
+            />
+            <button
+              type="button"
+              className="btn-ghost shrink-0 px-2 py-1 text-[12px]"
+              onClick={() => {
+                void navigator.clipboard?.writeText(resetUrl);
+                setResetCopied(true);
+              }}
+            >
+              {resetCopied ? 'Copied' : 'Copy'}
+            </button>
+          </div>
+        </div>
+      )}
 
       {resentUrl && (
         <div className="space-y-1 rounded-md border border-good/20 bg-good-soft px-2.5 py-2">
