@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import { useAuth } from './lib/auth.tsx';
 import Login from './pages/Login.tsx';
 import AcceptInvite from './pages/AcceptInvite.tsx';
+import ResetPassword from './pages/ResetPassword.tsx';
 import FirstRun from './pages/FirstRun.tsx';
 import Shell from './components/Shell.tsx';
 
@@ -56,6 +57,7 @@ export default function App() {
     return (
       <Routes>
         <Route path="/accept-invite" element={<AcceptInvite />} />
+        <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="*" element={<Login />} />
       </Routes>
     );
