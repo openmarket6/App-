@@ -44,37 +44,33 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
  */
 const KNOWN_GAPS: Record<string, string> = {
   'GET /api/health':
-    'Settings shows a panel describing the PREVIOUS architecture — a store ' +
-    'driver of memory/blobs/prisma, and a brand name from BRAND_NAME. None of ' +
-    'those exist here. The panel needs rewriting to describe this system, not ' +
-    'an endpoint invented to satisfy it.',
+    'Settings renders a panel describing the PREVIOUS architecture — a store ' +
+    'driver of memory/blobs/prisma, a brand name from BRAND_NAME. None of those ' +
+    'exist here. The panel needs rewriting to describe this system, not an ' +
+    'endpoint invented to satisfy it.',
   'GET /api/documents/:id/content':
     'The UI wants raw bytes. Storage is deliberately private with per-request ' +
     'signed URLs, and rule 3 of services/storage.ts is that bytes never stream ' +
     'through this API. DocumentLink should fetch /documents/:id/download and ' +
     'use the URL it returns.',
   'PATCH /api/jurisdictions/:id':
-    'Saving automation approval and its terms-of-service note. Not written yet.',
-  'POST /api/clients':
-    'Creating a contractor from the Contractors screen. Not written yet.',
-  'POST /api/permits':
-    'Creating a permit from PermitNew. Not written yet — /v1/permits exists.',
-  'POST /api/compliance':
-    'Adding a compliance item. Not written yet.',
-  'PATCH /api/compliance/:id/review':
-    'Reviewing a compliance item. Not written yet.',
+    'Recording a portal correction. Two of the five fields it sends have no ' +
+    'column: automationApproved maps onto adapter_verified_at/_by and ' +
+    'tosReviewNote onto adapter_notes, but portalUrlConfidence has nowhere to ' +
+    'go. Needs the confidence column, or a decision to drop it — not a route ' +
+    'that silently discards a field a coordinator filled in.',
   'POST /api/supervision/visits':
-    'Logging a site visit. Not written yet.',
+    'The page posts a flat visit (permitId, purpose, occurredAt, observations, ' +
+    'photos). The schema models visits as milestones hanging off a supervision ' +
+    'ENGAGEMENT, with check-in, check-out and sign-off. Reconciling those two ' +
+    'is real design work, and supervision records are legally load-bearing — ' +
+    'a visit written into the wrong shape is one the verdict logic misreads.',
   'PATCH /api/supervision/visits/:id':
-    'Amending a site visit. Not written yet.',
+    'Amending a visit narrative, with a mandatory reason. Same model mismatch ' +
+    'as the create above; do them together.',
   'POST /api/portal/folders/:id/upload':
     'Portal folder upload — both the Files screen and the permit page use it. ' +
     'Not written yet.',
-  'PATCH /api/clients/:id':
-    'Putting a contractor on filing hold. The columns do not exist: ' +
-    'ocs.companies has no filing_hold or filing_hold_reason, so this needs a ' +
-    'migration before a route can mean anything. Writing one that silently ' +
-    'dropped the field would be worse than the 404.',
 };
 
 /*
