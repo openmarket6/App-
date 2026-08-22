@@ -136,7 +136,7 @@ export default function SignDocument({
               const el = e.currentTarget;
               if (el.scrollTop + el.clientHeight >= el.scrollHeight - 24) setReadToEnd(true);
             }}
-            className="max-h-[46vh] overflow-y-auto rounded-md border border-line bg-surface px-4 py-3 text-[13px] leading-relaxed"
+            className="max-h-[46vh] overflow-y-auto rounded-md border border-line bg-white px-4 py-3 text-[13px] leading-relaxed"
             /*
              * The body is HTML this system rendered from a template in our own
              * source tree -- it is not user input and never has been. It is

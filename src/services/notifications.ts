@@ -36,6 +36,10 @@ export type NotificationKind =
   | 'message_received'
   | 'payment_succeeded'
   | 'payment_failed'
+  // Added in 0039. The type here and the enum in the database are two halves
+  // of one fact -- a kind that exists in one and not the other is either a
+  // compile error or a 500, and the 500 is the expensive one.
+  | 'signature_requested'
   | 'system';
 
 export interface NotifyParams {

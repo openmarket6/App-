@@ -451,6 +451,70 @@ describeIfDb('signing', () => {
     }
   });
 
+  it('tells the contractor, rather than only writing a row', async () => {
+    await reset();
+    const app = await server();
+    try {
+      const staff = await tokenFor(app, ADMIN);
+      const sent = await post(app, staff, '/api/signing/requests', {
+        clientId: ALPHA, kind: 'MASTER_SERVICE_AGREEMENT',
+      });
+      expect(sent.statusCode).toBe(201);
+      const body = JSON.parse(sent.body);
+
+      /*
+       * The staff screen renders the word "Sent". Before this it meant "an
+       * INSERT succeeded" -- no notification, no email, nothing the contractor
+       * could see. An agreement can wait three weeks on somebody who was never
+       * told.
+       */
+      expect(body.delivery.notifiedUsers).toBe(1);
+
+      const c = client(ownerUrl!);
+      await c.connect();
+      try {
+        const { rows } = await c.query(
+          `select kind::text as kind, title, link_path from ocs.notifications
+            where company_id = $1 and entity_id = $2`,
+          [ALPHA, body.id],
+        );
+        expect(rows).toHaveLength(1);
+        expect(rows[0].kind).toBe('signature_requested');
+        expect(rows[0].link_path).toBe('/onboarding');
+      } finally {
+        await c.end();
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('says so when there is nobody at the contractor to tell', async () => {
+    await reset();
+    const app = await server();
+    const c = client(ownerUrl!);
+    await c.connect();
+    try {
+      // A contractor onboarded before anyone was invited. Common, and the
+      // state in which "Sent" is most misleading.
+      await c.query('update ocs.app_users set is_active = false where email = $1',
+        [ALPHA_USER.email]);
+      const staff = await tokenFor(app, ADMIN);
+      const body = JSON.parse((await post(app, staff, '/api/signing/requests', {
+        clientId: ALPHA, kind: 'MASTER_SERVICE_AGREEMENT',
+      })).body);
+
+      expect(body.delivery.notifiedUsers).toBe(0);
+      expect(body.delivery.emailQueued).toBe(false);
+      expect(body.delivery.note).toMatch(/portal account yet/i);
+    } finally {
+      await c.query('update ocs.app_users set is_active = true where email = $1',
+        [ALPHA_USER.email]);
+      await c.end();
+      await app.close();
+    }
+  });
+
   it('refuses to send to a contractor with nobody to send to', async () => {
     await reset();
     const app = await server();

@@ -35,6 +35,7 @@ import {
   type SignableKind, type SignatureRequest,
 } from '../../shared/signing.js';
 import { templateFor, type SigningContext } from '../../domain/signing/templates.js';
+import { notify, emailConfigured } from '../../services/notifications.js';
 import { env } from '../../config/env.js';
 
 const KIND = z.enum(SIGNABLE_KINDS as unknown as [string, ...string[]]);
@@ -449,6 +450,46 @@ export async function compatSigningRoutes(app: FastifyInstance): Promise<void> {
           throw err;
         }
 
+        /*
+         * Tell the contractor. This is the difference between SENT meaning
+         * "we asked them" and SENT meaning "we wrote a row".
+         *
+         * Every portal user for the company gets the in-app notification,
+         * because any of them may hold portal:sign_documents and the one whose
+         * name is on the contact record is often not the one at a desk. The
+         * EMAIL goes to exactly one address -- attaching it per user would send
+         * the same agreement four times to a four-person office.
+         */
+        const { rows: portalUsers } = await tx.query<{ id: string; email: string }>(
+          `select id, email from ocs.app_users
+            where client_id = $1 and app_role = 'CLIENT'
+              and is_active and deleted_at is null
+            order by created_at`,
+          [body.clientId],
+        );
+
+        const target = signerEmail.toLowerCase();
+        const emailUserId =
+          portalUsers.find((u) => u.email.toLowerCase() === target)?.id
+          ?? portalUsers[0]?.id
+          ?? null;
+
+        for (const u of portalUsers) {
+          await notify(tx, {
+            companyId: body.clientId,
+            userId: u.id,
+            kind: 'signature_requested',
+            title: `${SIGNABLE_LABELS[kind]} is waiting for your signature`,
+            body:
+              'Open it, read it through, and sign at the bottom. It takes a ' +
+              'minute and it unblocks the rest of your onboarding.',
+            entityType: 'signature_request',
+            entityId: rows[0]!.id,
+            linkPath: '/onboarding',
+            email: u.id === emailUserId ? { to: signerEmail } : null,
+          });
+        }
+
         await writeAudit(tx, {
           companyId: body.clientId,
           actorUserId: auth.userId,
@@ -463,7 +504,30 @@ export async function compatSigningRoutes(app: FastifyInstance): Promise<void> {
         });
 
         reply.code(201);
-        return present(rows[0]!);
+        return {
+          ...present(rows[0]!),
+          /*
+           * What actually happened, said plainly, because the screen renders
+           * the word "Sent".
+           *
+           * A contractor with no portal user yet gets no notification and no
+           * email -- there is nobody to notify. That is a real and common
+           * state early in onboarding, and a screen that says "Sent" over it is
+           * how an agreement waits three weeks on somebody who was never told.
+           */
+          delivery: {
+            notifiedUsers: portalUsers.length,
+            emailQueued: emailUserId !== null,
+            emailConfigured: emailConfigured(),
+            note: portalUsers.length === 0
+              ? 'Nobody from this contractor has a portal account yet, so they have '
+                + 'not been told. Invite them, or send the agreement on by hand.'
+              : !emailConfigured()
+                ? 'No email provider is configured, so this is waiting in the portal '
+                  + 'only. It will be emailed once one is set up.'
+                : null,
+          },
+        };
       }, body.clientId);
     },
   );

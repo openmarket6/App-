@@ -218,7 +218,7 @@ export default function FieldVisits() {
       </div>
 
       {note && (
-        <div className="mb-3 rounded-lg border border-line bg-surface px-3 py-2 text-sm">
+        <div className="mb-3 rounded-lg border border-line bg-white px-3 py-2 text-sm">
           {note}{' '}
           <button className="underline text-ink-mute" onClick={() => setNote(null)}>
             dismiss
@@ -423,7 +423,7 @@ function VisitCard({
 
   return (
     <li
-      className={`rounded-xl border bg-surface ${
+      className={`rounded-xl border bg-white ${
         visit.overdue ? 'border-rose-300' : 'border-line'
       }`}
     >

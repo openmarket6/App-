@@ -472,7 +472,7 @@ export default function DocumentsGenerate() {
             )}
             <ul className="space-y-2">
               {(listQ.data?.documents ?? []).map((d) => (
-                <li key={d.id} className="rounded border border-line bg-surface p-2 text-sm">
+                <li key={d.id} className="rounded border border-line bg-white p-2 text-sm">
                   <div className="flex items-start justify-between gap-2">
                     <span className="font-medium">{d.kindLabel}</span>
                     <span
@@ -593,7 +593,7 @@ function MailPanel({ documentId }: { documentId: string }) {
   const quote = quoteQ.data;
 
   return (
-    <section className="mt-4 rounded border border-line bg-surface p-3">
+    <section className="mt-4 rounded border border-line bg-white p-3">
       <h3 className="mb-1 text-sm font-semibold">Post it</h3>
 
       {quote && !quote.configured && (

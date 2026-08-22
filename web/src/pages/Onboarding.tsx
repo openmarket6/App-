@@ -49,6 +49,14 @@ import SignDocument from '../components/SignDocument.tsx';
 
 type StepState = 'done' | 'pending' | 'blocked' | 'not_applicable';
 
+/** What POST /signing/requests reports about who was actually told. */
+interface SendDelivery {
+  notifiedUsers: number;
+  emailQueued: boolean;
+  emailConfigured: boolean;
+  note: string | null;
+}
+
 const STEP_BADGE: Record<StepState, { label: string; cls: string }> = {
   done: { label: 'Done', cls: 'badge-green' },
   pending: { label: 'Pending', cls: 'badge-amber' },
@@ -590,9 +598,21 @@ function AgreementList({
   const qc = useQueryClient();
   const [signing, setSigning] = useState<string | null>(null);
 
+  /*
+   * The send response says what actually reached the contractor, and it is
+   * kept and shown.
+   *
+   * "Sent" used to mean an INSERT succeeded. A contractor with no portal user
+   * yet -- normal early in onboarding -- was told nothing at all, and the
+   * screen said Sent over the top of it.
+   */
+  const [delivery, setDelivery] = useState<SendDelivery | null>(null);
+
   const send = useMutation({
-    mutationFn: (kind: SignableKind) => post('/signing/requests', { clientId: client.id, kind }),
-    onSuccess: () => {
+    mutationFn: (kind: SignableKind) =>
+      post<{ delivery: SendDelivery }>('/signing/requests', { clientId: client.id, kind }),
+    onSuccess: (data) => {
+      setDelivery(data.delivery ?? null);
       void qc.invalidateQueries({ queryKey: ['signing'] });
     },
   });
@@ -608,6 +628,12 @@ function AgreementList({
         </div>
       )}
       {send.isError && <ErrorState error={send.error} compact title="Could not send that agreement" />}
+
+      {delivery?.note && (
+        <div className="rounded-md border border-warn/25 bg-warn-soft px-3 py-2 text-[13px] text-warn leading-snug">
+          {delivery.note}
+        </div>
+      )}
 
       <ul className="divide-y divide-line">
         {required.map((kind) => {
