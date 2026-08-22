@@ -1,0 +1,27 @@
+-- =============================================================================
+-- 0022  Let an approval be recorded without rewriting the change it approves
+-- =============================================================================
+-- WHY THIS EXISTS
+--
+-- 0020 granted UPDATE on ocs.subscriptions but withheld it entirely from
+-- ocs.subscription_changes, on the reasoning that a change record is written
+-- once and never revised. That went one step too far: recording an approval IS
+-- an UPDATE on subscription_changes, so retainer release broke with a 500.
+--
+-- This grant was originally written by editing 0020 in place. That is not
+-- available: 0020 had already been applied, and the migration runner compares
+-- the checksum of every applied file on each run. Editing it froze deploys with
+-- "Applied migrations are immutable; add a new migration instead." The runner
+-- was right, and this is the forward fix it asked for.
+--
+-- A COLUMN-level grant, not a table-level one. "Pending approval" means an
+-- approval is written afterwards -- but the plan the change moved between, the
+-- amounts, and who asked for it must stay fixed, so an approval can never
+-- quietly become a different change. The grant says exactly that and no more.
+--
+-- No DELETE is granted here or anywhere else on these tables. Financial history
+-- is not something the application should be able to remove, and the absence of
+-- the grant -- rather than a trigger -- is what enforces it.
+-- =============================================================================
+
+grant update (approved_by, approved_at) on ocs.subscription_changes to ocs_app, ocs_service;
