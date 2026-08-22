@@ -3,7 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>One Contractor Solutions — Portal</title>
+<title>Contractor Portal — 1CS Contractor Solutions</title>
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" href="/favicon.png" sizes="64x64">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="theme-color" content="#021432">
+
 <!--
   Contractor portal.
 
@@ -24,35 +29,35 @@
 -->
 <style>
   :root {
-    --brand:        #1d4ed8;
+    --brand:        #185ac6;
     --brand-ink:    #ffffff;
-    --brand-soft:   #eaf0fd;
+    --brand-soft:   #e7effc;
 
-    --ground:       #f7f8fa;
+    --ground:       #f2f5f7;
     --surface:      #ffffff;
-    --surface-alt:  #f0f2f6;
-    --line:         #dee2ea;
-    --ink:          #171a20;
-    --ink-soft:     #414a58;
-    --muted:        #5f6a79;
+    --surface-alt:  #e9edf2;
+    --line:         #dce3eb;
+    --ink:          #0f1f3d;
+    --ink-soft:     #33415a;
+    --muted:        #5b6b80;
 
-    --ok:      #146c43;  --ok-bg:      #e7f4ec;
+    --ok:      #2c7a52;  --ok-bg:      #e9f4ee;
     --warn:    #8a5a11;  --warn-bg:    #fdf4e4;
-    --bad:     #a3231b;  --bad-bg:     #fbeceb;
-    --info:    #1d4ed8;  --info-bg:    #eaf0fd;
+    --bad:     #b42318;  --bad-bg:     #fdecea;
+    --info:    #185ac6;  --info-bg:    #e7effc;
 
     --radius: 9px;
-    --shadow: 0 1px 2px rgba(23,26,32,.05), 0 8px 24px -16px rgba(23,26,32,.28);
+    --shadow: 0 1px 2px rgba(2,20,50,.06), 0 8px 24px -16px rgba(2,20,50,.3);
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
-      --brand: #7ba1f0; --brand-ink: #0e1420; --brand-soft: #1a2233;
-      --ground: #14171c; --surface: #1b1f26; --surface-alt: #232830;
-      --line: #2c323b; --ink: #e6e9ee; --ink-soft: #bcc4cf; --muted: #8f98a6;
-      --ok: #6ed49f; --ok-bg: #15281f;
+      --brand: #7fa8f5; --brand-ink: #021432; --brand-soft: #0d2547;
+      --ground: #0a1424; --surface: #0f1d33; --surface-alt: #16273f;
+      --line: #23364f; --ink: #e8edf4; --ink-soft: #bdc8d8; --muted: #a1afc2;
+      --ok: #94c63d; --ok-bg: #1b2a12;
       --warn: #e2b163; --warn-bg: #2a2318;
       --bad: #f19289; --bad-bg: #2c1b19;
-      --info: #7ba1f0; --info-bg: #1a2233;
+      --info: #7fa8f5; --info-bg: #0d2547;
       --shadow: 0 1px 2px rgba(0,0,0,.35), 0 8px 24px -16px rgba(0,0,0,.7);
     }
   }
@@ -167,6 +172,17 @@
   .login-wrap { min-height: 100vh; display: grid; place-items: center; padding: 24px; }
   .login { width: 100%; max-width: 430px; }
   .login h1 { font-size: 24px; margin: 0 0 4px; }
+  /* The logo is an image, so it needs a light and a dark cut. Only one is ever
+     displayed; the other costs nothing because display:none is never fetched
+     by any current browser once the rule applies at parse time. */
+  .login-logo { height: 42px; width: auto; display: block; margin: 0 0 14px; }
+  .login-logo.on-dark { display: none; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .login-logo.on-light { display: none; }
+    :root:not([data-theme="light"]) .login-logo.on-dark  { display: block; }
+  }
+  [data-theme="dark"] .login-logo.on-light { display: none; }
+  [data-theme="dark"] .login-logo.on-dark  { display: block; }
   .login .sub { color: var(--muted); font-size: 14px; margin: 0 0 22px; }
   .login .field + .field { margin-top: 12px; }
   details.setup { margin-top: 18px; font-size: 13.5px; }
@@ -1249,7 +1265,10 @@ function loginView() {
 
   return el('div', { class: 'login-wrap' },
     el('form', { class: 'login card', onsubmit: submit },
-      el('h1', {}, 'One Contractor Solutions'),
+      el('img', { class: 'login-logo on-light', src: '/brand/1cs-logo.png',
+                  alt: '1CS Contractor Solutions' }),
+      el('img', { class: 'login-logo on-dark', src: '/brand/1cs-logo-onnavy.png',
+                  alt: '', 'aria-hidden': 'true' }),
       el('p', { class: 'sub' }, 'Contractor portal'),
       msg,
       field('Email', email),

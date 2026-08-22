@@ -3,7 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Permit Intake — One Contractor Solutions</title>
+<title>Permit Intake — 1CS Contractor Solutions</title>
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" href="/favicon.png" sizes="64x64">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="theme-color" content="#021432">
+
 <!--
   Permit intake form.
 
@@ -22,26 +27,26 @@
 -->
 <style>
   :root {
-    --bg: #f6f7f9;
+    --bg: #f2f5f7;
     --panel: #ffffff;
-    --ink: #16191d;
-    --muted: #5b6470;
-    --line: #dfe3e8;
-    --accent: #1f4fd8;
+    --ink: #0f1f3d;
+    --muted: #5b6b80;
+    --line: #dce3eb;
+    --accent: #185ac6;
     --accent-ink: #ffffff;
-    --ok: #0f7a3d;
+    --ok: #2c7a52;
     --warn: #9a6400;
-    --bad: #b3261e;
+    --bad: #b42318;
     --warn-bg: #fff8e6;
     --bad-bg: #fdecea;
-    --ok-bg: #e9f6ee;
+    --ok-bg: #e9f4ee;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
-      --bg: #14171b; --panel: #1c2026; --ink: #e8eaed; --muted: #9aa3ad;
-      --line: #2c323a; --accent: #6f93ff; --accent-ink: #10131a;
-      --ok: #6ee7a0; --warn: #f0c060; --bad: #ff9b93;
-      --warn-bg: #2e2718; --bad-bg: #33201e; --ok-bg: #16291f;
+      --bg: #0a1424; --panel: #0f1d33; --ink: #e8edf4; --muted: #a1afc2;
+      --line: #23364f; --accent: #7fa8f5; --accent-ink: #021432;
+      --ok: #94c63d; --warn: #f0c060; --bad: #ff9b93;
+      --warn-bg: #2e2718; --bad-bg: #33201e; --ok-bg: #1b2a12;
     }
   }
   * { box-sizing: border-box; }
@@ -53,6 +58,14 @@
     background: var(--panel); border-bottom: 1px solid var(--line);
     padding: 16px 20px; position: sticky; top: 0; z-index: 10;
   }
+  .hdr-logo { height: 34px; width: auto; display: block; margin: 0 0 10px; }
+  .hdr-logo.on-dark { display: none; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .hdr-logo.on-light { display: none; }
+    :root:not([data-theme="light"]) .hdr-logo.on-dark  { display: block; }
+  }
+  [data-theme="dark"] .hdr-logo.on-light { display: none; }
+  [data-theme="dark"] .hdr-logo.on-dark  { display: block; }
   header h1 { margin: 0; font-size: 17px; letter-spacing: -0.01em; }
   header p { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
   .wrap { max-width: 1180px; margin: 0 auto; padding: 20px; }
@@ -113,8 +126,12 @@
 <body>
 
 <header>
+  <img class="hdr-logo on-light" src="/brand/1cs-logo.png"
+       alt="1CS Contractor Solutions" width="1040" height="210">
+  <img class="hdr-logo on-dark" src="/brand/1cs-logo-onnavy.png"
+       alt="" aria-hidden="true" width="1040" height="210">
   <h1>Permit Intake</h1>
-  <p>One Contractor Solutions — Florida permit application</p>
+  <p>Florida permit application</p>
 </header>
 
 <div class="wrap">
