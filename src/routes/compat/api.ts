@@ -28,7 +28,7 @@ import { withTenant, withServiceContext, type Tx } from '../../db/tenant.js';
 import { requireApiAuth, requireCapability } from './auth.js';
 import { parse, clientIp, userAgent } from '../../lib/http-helpers.js';
 import { writeAudit } from '../../lib/audit.js';
-import { badRequest, forbidden, notFound, AppError } from '../../lib/errors.js';
+import { badRequest, forbidden, notFound, conflict, AppError } from '../../lib/errors.js';
 import { publicUser, newInviteToken, type UserRow } from '../../auth/native.js';
 import { roleCatalogue, isStaff, ROLES, type Role } from '../../domain/capabilities.js';
 import {
@@ -647,6 +647,184 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
     );
   });
 
+  /**
+   * The frontend PATCHes /users/:id/role for a role change and /users/:id for
+   * a rename or deactivation. Both land on the same logic above -- this is the
+   * address the shipped app actually calls, not a second implementation.
+   */
+  app.patch(
+    '/api/users/:userId/role',
+    { preHandler: [requireApiAuth, requireCapability('user:assign_role')] },
+    async (req, reply) => {
+      const { userId } = parse(z.object({ userId: z.string().uuid() }), req.params, 'parameters');
+      const body = parse(
+        z.object({
+          role: z.enum(ROLES),
+          clientId: z.string().uuid().nullable().optional(),
+        }),
+        req.body,
+        'role change',
+      );
+      const authCtx = req.apiAuth!;
+
+      /*
+       * You cannot change your own role. Not merely a lockout guard: an
+       * administrator who can promote themselves has no meaningful ceiling on
+       * their access, so the restriction holds in both directions.
+       */
+      if (userId === authCtx.userId) {
+        throw forbidden('You cannot change your own role — ask another administrator');
+      }
+
+      return withServiceContext(
+        async (tx) => {
+          const before = await tx.one<UserRow>(
+            `select id, email, name, app_role, client_id, is_active, password_hash,
+                    token_version, created_at, last_login_at
+               from ocs.app_users where id = $1 and deleted_at is null for update`,
+            [userId],
+          );
+          if (!before) throw notFound('User');
+
+          if (before.app_role === 'ADMIN' && body.role !== 'ADMIN') {
+            const remaining = await tx.one<{ n: string }>(
+              `select count(*)::text as n from ocs.app_users
+                where app_role = 'ADMIN' and is_active and deleted_at is null and id <> $1`,
+              [userId],
+            );
+            if (Number(remaining?.n ?? 0) === 0) {
+              throw conflict(
+                'This is the last active administrator — promote someone else first',
+              );
+            }
+          }
+
+          const clientId = body.role === 'CLIENT' ? (body.clientId ?? before.client_id) : null;
+          if (body.role === 'CLIENT' && !clientId) {
+            throw badRequest('A portal account must be linked to a contractor — pass clientId');
+          }
+          if (clientId) {
+            const company = await tx.one<{ id: string }>(
+              `select id from ocs.companies where id = $1 and deleted_at is null`,
+              [clientId],
+            );
+            if (!company) throw badRequest('No such contractor');
+          }
+
+          const updated = await tx.one<UserRow>(
+            `update ocs.app_users
+                set app_role = $2::ocs.app_role,
+                    -- A staff account must not keep a contractor link behind
+                    -- it: that link is what scopes their queries, and a stale
+                    -- one is a scoping surprise waiting to happen.
+                    client_id = $3,
+                    token_version = token_version + 1
+              where id = $1
+              returning id, email, name, app_role, client_id, is_active, password_hash,
+                        token_version, created_at, last_login_at`,
+            [userId, body.role, clientId],
+          );
+
+          // The old role's access must not outlive the change by the life of
+          // an access token.
+          await tx.query(
+            `update ocs.refresh_tokens set revoked_at = now()
+              where user_id = $1 and revoked_at is null`,
+            [userId],
+          );
+
+          await writeAudit(tx, {
+            companyId: clientId,
+            actorUserId: authCtx.userId,
+            actorEmail: authCtx.email,
+            action: 'user.role_changed',
+            entityType: 'app_user',
+            entityId: userId,
+            summary: `${before.email}: ${before.app_role} -> ${body.role}`,
+            before: { role: before.app_role, clientId: before.client_id },
+            after: { role: body.role, clientId },
+            requestId: req.id,
+            ipAddress: clientIp(req),
+          });
+
+          void reply;
+          return { user: publicUser(updated!) };
+        },
+        { reason: 'change_user_role' },
+      );
+    },
+  );
+
+  /**
+   * Issue a fresh invitation.
+   *
+   * Refused once the person has a password, because at that point the problem
+   * is not a missing invite -- it is a forgotten password, and a new invite
+   * would silently reset an account somebody is already using.
+   */
+  app.post(
+    '/api/users/:userId/resend-invite',
+    { preHandler: [requireApiAuth, requireCapability('user:invite')] },
+    async (req) => {
+      const authCtx = req.apiAuth!;
+      const { userId } = parse(z.object({ userId: z.string().uuid() }), req.params, 'parameters');
+
+      return withServiceContext(
+        async (tx) => {
+          const target = await tx.one<UserRow>(
+            `select id, email, name, app_role, client_id, is_active, password_hash,
+                    token_version, created_at, last_login_at
+               from ocs.app_users where id = $1 and deleted_at is null for update`,
+            [userId],
+          );
+          if (!target) throw notFound('User');
+          if (target.password_hash) {
+            throw badRequest(
+              'That user has already set a password. Sending a new invitation would ' +
+                'reset an account they are using — reset their password instead.',
+            );
+          }
+
+          const token = newInviteToken();
+          const expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
+          const updated = await tx.one<UserRow>(
+            `update ocs.app_users
+                set invite_token = $2, invite_expires_at = $3, is_active = true
+              where id = $1
+              returning id, email, name, app_role, client_id, is_active, password_hash,
+                        token_version, created_at, last_login_at`,
+            [userId, token, expires],
+          );
+
+          await writeAudit(tx, {
+            companyId: target.client_id,
+            actorUserId: authCtx.userId,
+            actorEmail: authCtx.email,
+            action: 'user.invite_resent',
+            entityType: 'app_user',
+            entityId: userId,
+            summary: `Invitation re-issued for ${target.email}`,
+            requestId: req.id,
+            ipAddress: clientIp(req),
+          });
+
+          return {
+            user: publicUser(updated!),
+            invitePending: true,
+            // Returned so an administrator can pass the link on directly.
+            // Email delivery is optional in this deployment, and an invitation
+            // nobody can send is worse than one shown to the person creating it.
+            inviteToken: token,
+            inviteExpiresAt: expires.toISOString(),
+            acceptPath: `/accept-invite?token=${token}`,
+          };
+        },
+        { reason: 'resend_invite' },
+      );
+    },
+  );
+
   // ---------------------------------------------------------------------------
   // Honest migration boundary
   // ---------------------------------------------------------------------------
@@ -690,7 +868,7 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/_migration-status', async () => ({
     migrated: [
       'auth', 'dashboard', 'clients', 'permits', 'jurisdictions',
-      'supervision/visits', 'users', 'corrections', 'inspections', 'admin', 'support', 'notary', 'billing',
+      'supervision/visits', 'users', 'corrections', 'inspections', 'admin', 'support', 'notary', 'billing', 'drafting',
     ],
     notMigrated: NOT_MIGRATED,
     note:
