@@ -90,11 +90,14 @@ const HIGH_VALUATION_CENTS = 250_000_00;
  * Shared so the contractor's checklist and the filing gate read the same
  * number. They did not, and the gap was two orders of magnitude.
  *
- * CONFIRM THIS FIGURE WITH COUNSEL before relying on it. Florida has amended
- * lien-law thresholds more than once, and this file is not a substitute for
- * the statute.
+ * $7,500 -- the figure OCS operates on. Fla. Stat. 713.02(5) exempts direct
+ * contracts of $7,500 or less from the Notice of Commencement requirement, so
+ * the trigger is strictly greater than the threshold, not greater-or-equal.
+ * Some jurisdictions and some improvement types (notably direct contracts for
+ * repair or replacement of an existing HVAC system) carry their own rules; the
+ * per-jurisdiction override layer below is where those belong, not here.
  */
-export const NOC_THRESHOLD_CENTS = 250_000;
+export const NOC_THRESHOLD_CENTS = 750_000;
 
 export function buildRequirements(ctx: RequirementContext): RequirementItem[] {
   const items = new Map<string, RequirementItem>();

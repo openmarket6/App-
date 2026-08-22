@@ -11,7 +11,11 @@
  * filing; and if the checklist is what people trust, the NOC gets missed on a
  * job that legally needs one.
  *
- * These tests exist so the two cannot drift apart again.
+ * The number is $7,500: Fla. Stat. 713.02(5) exempts direct contracts of
+ * $7,500 or less, so the trigger is strictly greater than the threshold.
+ *
+ * These tests exist so the two cannot drift apart again, and so the figure
+ * itself cannot be changed silently.
  */
 import { describe, it, expect } from 'vitest';
 import { buildRequirements } from '../src/shared/requirements.js';
@@ -41,6 +45,29 @@ describe('the NOC threshold', () => {
   it('is one number, shared by the checklist and the filing gate', () => {
     // The whole bug in one assertion. These were 250_000 and 250_000_00.
     expect(GATE_THRESHOLD).toBe(NOC_THRESHOLD_CENTS);
+  });
+
+  it('is $7,500', () => {
+    // Pinned deliberately. This is a legal threshold, not a tuning knob --
+    // changing it should require changing this line and saying why.
+    expect(NOC_THRESHOLD_CENTS).toBe(750_000);
+  });
+
+  it('exempts a contract of exactly $7,500', () => {
+    // 713.02(5) exempts contracts of $7,500 "or less", so the boundary case
+    // is exempt. Greater-or-equal here would demand an NOC the statute does
+    // not require, on every job that lands exactly on the number.
+    expect(hasNoc(7_500_00)).toBe(false);
+  });
+
+  it('asks for one at $7,500.01', () => {
+    expect(hasNoc(7_500_00 + 1)).toBe(true);
+  });
+
+  it('does not ask on a small service call', () => {
+    // $1,200 water heater swap. Asking for a recorded NOC here sends the
+    // contractor to the county clerk for nothing.
+    expect(hasNoc(1_200_00)).toBe(false);
   });
 
   it('asks for an NOC on an ordinary re-roof', () => {
