@@ -73,6 +73,26 @@
   status = 200
   force = true
 
+# Health checks the backend actually publishes.
+#
+# Without these three rules, /healthz, /healthz/queue and /healthz/deep fall
+# through to the single-page-app rule at the bottom and are answered with
+# app.html and HTTP 200. An uptime monitor pointed at this domain therefore
+# reports green no matter what the API is doing -- which is the single most
+# dangerous kind of monitoring, because it produces confidence rather than
+# silence. Verified 22 Aug 2026: all three returned text/html 200 before this.
+[[redirects]]
+  from = "/healthz"
+  to = "https://ocs-api-i654.onrender.com/healthz"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/healthz/*"
+  to = "https://ocs-api-i654.onrender.com/healthz/:splat"
+  status = 200
+  force = true
+
 # Which commit is actually serving.
 #
 # This one matters more than it looks. A failed Render build leaves the
