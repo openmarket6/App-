@@ -36,6 +36,16 @@ import { LoadingPanel } from '../components/Spinner.tsx';
  */
 const ASSIGNABLE: Role[] = ROLES.filter((r) => r !== 'PENDING');
 
+/*
+ * The invite endpoints return `acceptPath` -- a root-relative path. What an
+ * administrator needs to paste into an email is an absolute URL, and the page
+ * they are on is by definition the right origin, so it is built here rather
+ * than asking the API to know its own public address.
+ */
+function inviteLink(acceptPath: string | null | undefined): string | null {
+  return acceptPath ? `${window.location.origin}${acceptPath}` : null;
+}
+
 const ROLE_CLASS: Record<Role, string> = {
   ADMIN: 'badge-blue',
   PERMIT_TECH: 'badge-blue',
@@ -324,9 +334,21 @@ function RoleControl({
     onSuccess: invalidate,
   });
 
+  /*
+   * The reissued link is the entire point of the request -- there is no
+   * outbound mail, so a response that is thrown away leaves the invitee with
+   * nothing and the administrator with no way to know that.
+   */
+  const [resentUrl, setResentUrl] = useState<string | null>(null);
+  const [resentCopied, setResentCopied] = useState(false);
+
   const resend = useMutation({
-    mutationFn: () => post(`/users/${row.id}/resend-invite`, {}),
-    onSuccess: invalidate,
+    mutationFn: () => post<{ acceptPath?: string | null }>(`/users/${row.id}/resend-invite`, {}),
+    onSuccess: (data) => {
+      setResentCopied(false);
+      setResentUrl(inviteLink(data?.acceptPath));
+      invalidate();
+    },
   });
 
   if (isSelf) {
@@ -434,6 +456,32 @@ function RoleControl({
         )}
       </div>
 
+      {resentUrl && (
+        <div className="space-y-1 rounded-md border border-good/20 bg-good-soft px-2.5 py-2">
+          <p className="text-[11px] text-good leading-snug">
+            New invitation link for {row.name}. Send it to them — it is shown here only because nothing emails it.
+          </p>
+          <div className="flex gap-1.5">
+            <input
+              readOnly
+              className="input py-1 font-mono text-[11px]"
+              value={resentUrl}
+              onFocus={(e) => e.currentTarget.select()}
+            />
+            <button
+              type="button"
+              className="btn-ghost shrink-0 px-2 py-1 text-[12px]"
+              onClick={() => {
+                void navigator.clipboard?.writeText(resentUrl);
+                setResentCopied(true);
+              }}
+            >
+              {resentCopied ? 'Copied' : 'Copy'}
+            </button>
+          </div>
+        </div>
+      )}
+
       {lastAdmin && (
         <p className="text-[11px] text-warn leading-snug">
           Last active administrator — cannot be demoted or deactivated until somebody else is promoted.
@@ -466,7 +514,7 @@ function InviteDrawer({ canAssignRole, onClose }: { canAssignRole: boolean; onCl
 
   const invite = useMutation({
     mutationFn: () =>
-      post<{ inviteUrl: string | null }>('/users/invite', {
+      post<{ acceptPath?: string | null }>('/users/invite', {
         email: email.trim(),
         name: name.trim(),
         role,
@@ -474,8 +522,9 @@ function InviteDrawer({ canAssignRole, onClose }: { canAssignRole: boolean; onCl
       }),
     onSuccess: (data) => {
       void qc.invalidateQueries({ queryKey: ['users'] });
-      setInviteUrl(data?.inviteUrl ?? null);
-      if (!data?.inviteUrl) onClose();
+      const url = inviteLink(data?.acceptPath);
+      setInviteUrl(url);
+      if (!url) onClose();
     },
   });
 
