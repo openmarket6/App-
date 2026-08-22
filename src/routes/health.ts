@@ -43,6 +43,32 @@ export async function healthRoutes(app: FastifyInstance): Promise<void> {
   }));
 
   /**
+   * The same fact, in the shape the Settings page asks for.
+   *
+   * The frontend has always called /api/health and there has never been one --
+   * every load of the Firm tab got a 404 and rendered its health panel empty.
+   * The infrastructure probes stay unprefixed where the platform expects them;
+   * this is the in-app answer, and it reports what the page actually shows:
+   * whether the database answers, which driver is serving, and the time as the
+   * server sees it.
+   */
+  app.get('/api/health', async () => {
+    let ok = true;
+    try {
+      const res = await appPool.query('select 1 as ok');
+      ok = res.rows.length === 1;
+    } catch {
+      ok = false;
+    }
+    return {
+      ok,
+      driver: 'postgres',
+      brand: 'One Contractor Solutions',
+      time: new Date().toISOString(),
+    };
+  });
+
+  /**
    * Which commit is serving this request.
    *
    * This exists because a failed build leaves the PREVIOUS deploy running,
