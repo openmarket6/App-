@@ -174,13 +174,21 @@ export function accelaConfigFrom(
     api_config: Record<string, unknown>;
   },
   credentials: { username: string | null; secret: string | null } | null,
+  /**
+   * The Accela application secret, already decrypted by the caller.
+   *
+   * Passed in rather than read from api_config. It used to live there in
+   * plaintext, which put it in every database dump and in the response of an
+   * endpoint that returns api_config whole. It is now stored encrypted beside
+   * the user credential, and a value still sitting in api_config is a leftover
+   * to be removed, not a source to read from.
+   */
+  appSecret?: string | null,
 ): AccelaConfig | null {
   const cfg = municipality.api_config ?? {};
   const clientId = cfg['clientId'] as string | undefined;
-  const clientSecret = cfg['clientSecret'] as string | undefined;
+  const clientSecret = appSecret ?? undefined;
 
-  // clientSecret is expected to arrive already decrypted alongside the user
-  // credential; a config holding a plaintext secret is a misconfiguration.
   if (!clientId || !clientSecret) return null;
   if (!municipality.agency_code) return null;
   if (!credentials?.username || !credentials.secret) return null;

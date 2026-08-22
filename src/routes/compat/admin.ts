@@ -510,7 +510,49 @@ export async function compatAdminRoutes(app: FastifyInstance): Promise<void> {
           // status-check mapping somebody else configured.
           const apiConfig = { ...(before.api_config ?? {}) };
           if (body.clientId !== undefined) apiConfig['clientId'] = body.clientId;
-          if (body.clientSecret !== undefined) apiConfig['clientSecret'] = body.clientSecret;
+
+          /**
+           * The app secret does NOT go in api_config.
+           *
+           * It did, and that was wrong twice over. api_config is a plain jsonb
+           * column, so a database dump yielded the secret in the clear -- while
+           * the user credential for the very same integration sits two tables
+           * away encrypted with pgp_sym_encrypt. And an existing endpoint,
+           * /v1/admin/municipalities/:id/integration, returns api_config whole,
+           * so it was echoed back in an API response as well.
+           *
+           * It now lives beside the credential it belongs with, encrypted the
+           * same way, keyed by integration and jurisdiction.
+           */
+          if (body.clientSecret !== undefined) {
+            delete apiConfig['clientSecret'];
+
+            if (!env.INTEGRATION_ENCRYPTION_KEY) {
+              throw badRequest(
+                'An application secret cannot be stored on this server: ' +
+                  'INTEGRATION_ENCRYPTION_KEY is unset, and there is nowhere safe to put it.',
+              );
+            }
+
+            const platformKey = body.platform ?? (before.api_config?.['platform'] as string) ?? null;
+            await tx.query(
+              `insert into ocs.integration_credentials
+                 (company_id, municipality_id, integration_key, username, secret_encrypted, created_by)
+               values (null, $1, $2, $3, pgp_sym_encrypt($4, $5), $6)
+               on conflict (integration_key, municipality_id) where company_id is null
+                 do update set username = excluded.username,
+                               secret_encrypted = excluded.secret_encrypted,
+                               is_active = true, last_error = null`,
+              [
+                id,
+                `${platformKey ?? 'custom'}:app`,
+                body.clientId ?? 'app',
+                body.clientSecret,
+                env.INTEGRATION_ENCRYPTION_KEY,
+                auth.userId,
+              ],
+            );
+          }
 
           await tx.query(
             `update ocs.municipalities

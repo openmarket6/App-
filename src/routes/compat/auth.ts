@@ -514,6 +514,28 @@ export async function compatAuthRoutes(app: FastifyInstance): Promise<void> {
           throw unauthorized('That invitation has expired — ask for a new one');
         }
 
+        /**
+         * An invitation cannot take over an account that is already in use.
+         *
+         * Defence in depth behind the invite endpoints, which are the things
+         * that decide who may be issued a token. This is the last point before
+         * a password is replaced, and it is the only one that sees the account
+         * being replaced -- so if a token is ever issued for a live account by
+         * any path, present or future, it stops here rather than handing over
+         * a working login.
+         *
+         * There is no password-reset flow today, so an invitation is only ever
+         * legitimate for an account that has never had a password. When reset
+         * arrives it must be its own flow, with its own token, not this one.
+         */
+        if (found.password_hash) {
+          logger.warn(
+            { userId: found.id },
+            'invitation presented for an account that already has a password; refused',
+          );
+          throw unauthorized('That invitation link is not valid');
+        }
+
         const passwordHash = await hashPassword(body.password);
         const updated = await tx.one<UserRow>(
           `update ocs.app_users

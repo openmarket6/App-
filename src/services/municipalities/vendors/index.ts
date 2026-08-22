@@ -74,6 +74,11 @@ export function resolveForMunicipality(
    * portal-only for lacking OAuth credentials it never needed.
    */
   if (municipality.platform === 'accela') {
+    /*
+     * The app secret is no longer in api_config -- it is in
+     * integration_credentials, encrypted. The caller decrypts it and passes it
+     * in as `appSecret`, exactly as it already does for the user credential.
+     */
     const config = accelaConfigFrom(
       {
         api_base_url: municipality.api_base_url,

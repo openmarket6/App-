@@ -671,6 +671,24 @@ export async function compatPortalRoutes(app: FastifyInstance): Promise<void> {
           const token = newInviteToken();
           const expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
+          /**
+           * The WHERE on the conflict branch is the whole security of this
+           * endpoint, and it was missing.
+           *
+           * Without it, upserting on the email address let a contractor
+           * administrator name ANY existing portal account -- including one at
+           * a different contractor -- and the update would move that account
+           * into their company, issue it a fresh invitation token, and hand
+           * that token back in the response. Redeeming it sets a password and
+           * returns a session, because accept-invite has no way to know who is
+           * redeeming. That is a complete takeover of another contractor's
+           * login, available to anyone who knows an email address.
+           *
+           * Restricted to rows ALREADY in this company, a conflict on somebody
+           * else's address now updates nothing and returns nothing, which the
+           * check below turns into a neutral refusal. Neutral deliberately: it
+           * must not become a way to discover which addresses have accounts.
+           */
           const row = await tx.one<UserRow & { client_admin: boolean }>(
             `insert into ocs.app_users
                (email, name, app_role, client_id, client_admin,
@@ -678,10 +696,12 @@ export async function compatPortalRoutes(app: FastifyInstance): Promise<void> {
              values ($1, $2, 'CLIENT', $3, $4, $5, $6, true)
              on conflict (lower(email)) do update
                set name = coalesce(excluded.name, ocs.app_users.name),
-                   client_id = excluded.client_id,
+                   client_admin = excluded.client_admin,
                    invite_token = excluded.invite_token,
                    invite_expires_at = excluded.invite_expires_at,
                    is_active = true
+               where ocs.app_users.client_id = excluded.client_id
+                 and ocs.app_users.password_hash is null
              returning id, email, name, app_role, client_id, is_active, password_hash,
                        token_version, created_at, last_login_at, client_admin`,
             [
@@ -689,7 +709,13 @@ export async function compatPortalRoutes(app: FastifyInstance): Promise<void> {
               body.clientAdmin ?? false, token, expires,
             ],
           );
-          if (!row) throw badRequest('Could not create the invitation');
+
+          if (!row) {
+            throw conflict(
+              'That email address cannot be invited. It may already be in use, or ' +
+                'already have a password set — ask them to sign in, or reset it instead.',
+            );
+          }
 
           await writeAudit(tx, {
             companyId,

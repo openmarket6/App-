@@ -178,3 +178,133 @@ describeIfDb('the contractor administrator flag', () => {
     ).rejects.toThrow(/row-level security|permission denied/i);
   });
 });
+
+/**
+ * Cross-tenant account takeover through the invite endpoint.
+ *
+ * The upsert on email address had no constraint on WHOSE account it was
+ * updating. A contractor administrator could name any existing portal account,
+ * including one at a different contractor, and the update would move it into
+ * their company, issue it a fresh invitation token, and hand that token back.
+ * Redeeming it set a password and returned a session, because accept-invite
+ * cannot know who is redeeming.
+ *
+ * A complete takeover of a competitor's login, available to anyone who knew an
+ * email address. These tests exist so it cannot come back.
+ */
+describeIfDb('the invite endpoint cannot reach another company', () => {
+  const BETA_USER_EMAIL = 'takeover-victim@test.invalid';
+
+  beforeAll(async () => {
+    await applyMigrations();
+    await seedTwoTenants();
+    const c = client(ownerUrl!);
+    await c.connect();
+    try {
+      await c.query(`delete from ocs.app_users where email = $1`, [BETA_USER_EMAIL]);
+      await c.query(
+        `insert into ocs.app_users (email, name, app_role, client_id, is_active, password_hash)
+         values ($1, 'Beta Person', 'CLIENT', $2, true, 'existing-hash')`,
+        [BETA_USER_EMAIL, BETA],
+      );
+    } finally {
+      await c.end();
+    }
+  });
+
+  it('will not move another company user with the invite upsert', async () => {
+    // The exact statement the endpoint runs, with the guard in place. Tested
+    // at the SQL level because that WHERE clause is the entire protection.
+    const c = client(ownerUrl!);
+    await c.connect();
+    try {
+      const r = await c.query(
+        `insert into ocs.app_users
+           (email, name, app_role, client_id, client_admin, invite_token, invite_expires_at, is_active)
+         values ($1, 'Pwned', 'CLIENT', $2, false, 'attacker-token', now() + interval '7 days', true)
+         on conflict (lower(email)) do update
+           set name = excluded.name,
+               invite_token = excluded.invite_token,
+               is_active = true
+           where ocs.app_users.client_id = excluded.client_id
+             and ocs.app_users.password_hash is null
+         returning id`,
+        [BETA_USER_EMAIL, ALPHA],
+      );
+      // No row comes back: the conflict matched, the guard refused the update.
+      expect(r.rowCount).toBe(0);
+    } finally {
+      await c.end();
+    }
+  });
+
+  it('leaves the victim untouched', async () => {
+    const c = client(ownerUrl!);
+    await c.connect();
+    try {
+      const r = await c.query(
+        `select client_id, invite_token, password_hash, name
+           from ocs.app_users where email = $1`,
+        [BETA_USER_EMAIL],
+      );
+      expect(r.rows[0].client_id).toBe(BETA);
+      expect(r.rows[0].invite_token).toBeNull();
+      expect(r.rows[0].password_hash).toBe('existing-hash');
+      expect(r.rows[0].name).toBe('Beta Person');
+    } finally {
+      await c.end();
+    }
+  });
+
+  it('will not re-invite an account that already has a password', async () => {
+    // Even inside the caller's own company. An invitation replaces a password,
+    // so one issued for a live account is a takeover of a colleague.
+    const c = client(ownerUrl!);
+    await c.connect();
+    try {
+      await c.query(`delete from ocs.app_users where email = 'inuse@alpha.invalid'`);
+      await c.query(
+        `insert into ocs.app_users (email, name, app_role, client_id, is_active, password_hash)
+         values ('inuse@alpha.invalid', 'In Use', 'CLIENT', $1, true, 'a-hash')`,
+        [ALPHA],
+      );
+      const r = await c.query(
+        `insert into ocs.app_users
+           (email, name, app_role, client_id, client_admin, invite_token, invite_expires_at, is_active)
+         values ('inuse@alpha.invalid', 'Taken', 'CLIENT', $1, false, 'tok', now() + interval '7 days', true)
+         on conflict (lower(email)) do update
+           set invite_token = excluded.invite_token
+           where ocs.app_users.client_id = excluded.client_id
+             and ocs.app_users.password_hash is null
+         returning id`,
+        [ALPHA],
+      );
+      expect(r.rowCount).toBe(0);
+    } finally {
+      await c.end();
+    }
+  });
+
+  it('still lets a company invite somebody genuinely new', async () => {
+    // The guard must not break the thing the endpoint is for.
+    const c = client(ownerUrl!);
+    await c.connect();
+    try {
+      await c.query(`delete from ocs.app_users where email = 'brandnew@alpha.invalid'`);
+      const r = await c.query(
+        `insert into ocs.app_users
+           (email, name, app_role, client_id, client_admin, invite_token, invite_expires_at, is_active)
+         values ('brandnew@alpha.invalid', 'New', 'CLIENT', $1, false, 'tok2', now() + interval '7 days', true)
+         on conflict (lower(email)) do update
+           set invite_token = excluded.invite_token
+           where ocs.app_users.client_id = excluded.client_id
+             and ocs.app_users.password_hash is null
+         returning id`,
+        [ALPHA],
+      );
+      expect(r.rowCount).toBe(1);
+    } finally {
+      await c.end();
+    }
+  });
+});
