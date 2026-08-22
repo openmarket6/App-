@@ -43,11 +43,6 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
  * waiting to be made — not a thing that is fine.
  */
 const KNOWN_GAPS: Record<string, string> = {
-  'GET /api/health':
-    'Settings renders a panel describing the PREVIOUS architecture — a store ' +
-    'driver of memory/blobs/prisma, a brand name from BRAND_NAME. None of those ' +
-    'exist here. The panel needs rewriting to describe this system, not an ' +
-    'endpoint invented to satisfy it.',
   'GET /api/documents/:id/content':
     'The UI wants raw bytes. Storage is deliberately private with per-request ' +
     'signed URLs, and rule 3 of services/storage.ts is that bytes never stream ' +
@@ -59,15 +54,6 @@ const KNOWN_GAPS: Record<string, string> = {
     'tosReviewNote onto adapter_notes, but portalUrlConfidence has nowhere to ' +
     'go. Needs the confidence column, or a decision to drop it — not a route ' +
     'that silently discards a field a coordinator filled in.',
-  'POST /api/supervision/visits':
-    'The page posts a flat visit (permitId, purpose, occurredAt, observations, ' +
-    'photos). The schema models visits as milestones hanging off a supervision ' +
-    'ENGAGEMENT, with check-in, check-out and sign-off. Reconciling those two ' +
-    'is real design work, and supervision records are legally load-bearing — ' +
-    'a visit written into the wrong shape is one the verdict logic misreads.',
-  'PATCH /api/supervision/visits/:id':
-    'Amending a visit narrative, with a mandatory reason. Same model mismatch ' +
-    'as the create above; do them together.',
   'POST /api/portal/folders/:id/upload':
     'Portal folder upload — both the Files screen and the permit page use it. ' +
     'Not written yet.',
