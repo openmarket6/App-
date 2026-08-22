@@ -44,8 +44,12 @@ import { logger } from '../../lib/logger.js';
  * `requestedClientId` is what the caller asked to look at. For a CLIENT it is
  * ignored entirely — they get their own company or nothing — so passing
  * someone else's id achieves nothing.
+ *
+ * Exported so sibling modules can reuse it. There is deliberately ONE
+ * implementation: this is the security boundary, and a second copy would be a
+ * second thing to keep correct.
  */
-async function scoped<T>(
+export async function scoped<T>(
   req: FastifyRequest,
   fn: (tx: Tx, companyId: string | null) => Promise<T>,
   requestedClientId?: string | null,
@@ -74,6 +78,19 @@ async function scoped<T>(
 }
 
 const clientFilter = (companyId: string | null) => (companyId ? ` and company_id = '${companyId}'` : '');
+
+/**
+ * Areas that still answer 501.
+ *
+ * Exported because the route-coverage test needs to tell "no route" apart from
+ * "a route that deliberately says not yet". A hardcoded copy in the test would
+ * drift the moment one of these is migrated, and then the test would be
+ * reporting yesterday's architecture.
+ */
+export const NOT_MIGRATED_AREAS = [
+  'signing',
+  'connectors', 'integrations', 'google',
+];
 
 export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
   const auth = { preHandler: requireApiAuth };
@@ -836,10 +853,7 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
    * is not migrated should say so, not look like a bug or an empty account. The
    * response names the area so it is obvious which one is missing.
    */
-  const NOT_MIGRATED = [
-    'signing',
-    'connectors', 'integrations', 'google',
-  ];
+  const NOT_MIGRATED = NOT_MIGRATED_AREAS;
 
   for (const area of NOT_MIGRATED) {
     app.all(`/api/${area}`, auth, async (_req, reply) => {
