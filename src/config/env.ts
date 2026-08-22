@@ -57,6 +57,10 @@ const schema = z.object({
   // ---------------------------------------------------------------------------
   STRIPE_SECRET_KEY: z.string().min(1).optional(),
   STRIPE_WEBHOOK_SECRET: z.string().min(1).optional(),
+  // Publishable, and safe to send to a browser -- that is what it is for. It is
+  // read here rather than hard-coded into the frontend so a key rotation is a
+  // configuration change rather than a rebuild and redeploy of the app.
+  STRIPE_PUBLISHABLE_KEY: z.string().min(1).optional(),
 
   // ---------------------------------------------------------------------------
   // Outbound email

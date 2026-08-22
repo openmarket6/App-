@@ -97,6 +97,50 @@ export async function createPaymentIntent(params: CreateIntentParams): Promise<S
   );
 }
 
+/**
+ * The Stripe customer for a contractor, created once.
+ *
+ * The company id goes in metadata so a charge can be traced back from the
+ * Stripe dashboard without a database lookup -- which is what somebody actually
+ * has to hand at 6pm when a payment is disputed.
+ */
+export async function ensureCustomer(params: {
+  companyId: string;
+  name: string;
+  email?: string | null;
+}): Promise<{ id: string }> {
+  const customer = await stripe().customers.create({
+    name: params.name,
+    ...(params.email ? { email: params.email } : {}),
+    metadata: { companyId: params.companyId },
+  });
+  logger.info({ companyId: params.companyId }, 'stripe customer created');
+  return { id: customer.id };
+}
+
+/**
+ * Start collecting a card without charging it.
+ *
+ * `off_session` because the card is being stored to bill a subscription later,
+ * when nobody is at the keyboard. Getting this wrong means the first automatic
+ * charge fails authentication and the contractor is chased for a payment their
+ * bank silently refused.
+ */
+export async function createSetupIntent(
+  customerId: string,
+): Promise<{ clientSecret: string; id: string }> {
+  const intent = await stripe().setupIntents.create({
+    customer: customerId,
+    usage: 'off_session',
+    payment_method_types: ['card'],
+  });
+
+  if (!intent.client_secret) {
+    throw new Error('Stripe returned a setup intent with no client secret');
+  }
+  return { clientSecret: intent.client_secret, id: intent.id };
+}
+
 export async function createRefund(params: {
   paymentIntentId: string;
   amountCents?: number;
