@@ -110,11 +110,9 @@ export default function Shell({ children }: { children: ReactNode }) {
     <div className="min-h-full flex">
       <aside className="w-[212px] shrink-0 bg-navy text-white flex flex-col">
         <div className="px-4 py-4 flex items-center gap-3 border-b border-white/10">
-          <div className="h-9 w-9 rounded bg-white/10 grid place-items-center text-[11px] font-bold tracking-wide">
-            1CS
-          </div>
+          <img src="/brand/1cs-mark-onnavy.png" alt="" aria-hidden className="h-8 w-auto shrink-0" />
           <div className="min-w-0">
-            <div className="text-sm font-semibold leading-tight truncate">1 Contractor Solutions</div>
+            <div className="text-sm font-semibold leading-tight truncate">Contractor Solutions</div>
           </div>
         </div>
 
