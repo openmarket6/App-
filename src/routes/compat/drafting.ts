@@ -115,22 +115,73 @@ const SELECT = `
   o.quoted_cents as "quotedCents",
   o.quote_note as "quoteNote",
   o.quote_approved_at as "quoteApprovedAt",
+  /*
+   * The contract in src/shared/drafting.ts calls this approvedAt, and the page
+   * reads approvedAt. Sending only quoteApprovedAt meant the approval date was
+   * undefined on every row. Both names go out: the contract's name is what the
+   * screen uses, and the stored name stays for anything reading the raw shape.
+   */
+  o.quote_approved_at as "approvedAt",
+  o.quoted_at as "quotedAt",
+  o.quoted_by as "quotedBy",
   o.target_delivery_at as "targetDeliveryAt",
   o.due_date as "dueDate",
   o.engineer_id as "engineerId",
   o.assigned_to as "assignedToUserId",
   o.priority::text as priority,
   o.delivered_at as "deliveredAt",
+  /*
+   * Does anything ordered here need a seal? The seal is a professional act
+   * attached to the SERVICE, not the order, so it is read from the catalogue
+   * rather than stored per order -- otherwise changing the catalogue would
+   * leave old orders claiming a seal they no longer need, or missing one they
+   * now do.
+   */
+  exists (
+    select 1 from ocs.drafting_services ds
+     where ds.service = any(o.services) and ds.requires_seal
+  ) as "requiresSeal",
   o.created_at as "createdAt",
   o.updated_at as "updatedAt"
 `;
 
 type Row = Record<string, unknown> & { storedStatus: string; quoteStatus: string };
 
+/**
+ * One line telling whoever is looking what happens next.
+ *
+ * The page renders this directly. Nothing was sending it, so the column sat
+ * empty on every row -- which on a work queue is the one column that matters.
+ */
+function draftingNextStep(status: string, quotedCents: unknown): string {
+  switch (status) {
+    case 'REQUESTED':
+      return quotedCents == null ? 'Scope it and send a quote' : 'Send the quote for approval';
+    case 'QUOTED':      return 'Waiting on the contractor to approve the quote';
+    case 'APPROVED':    return 'Assign a designer and start the drawings';
+    case 'IN_PROGRESS': return 'In production';
+    case 'AWAITING_SEAL': return 'Waiting on an engineer to seal it';
+    case 'DELIVERED':   return 'Delivered — nothing outstanding';
+    case 'CANCELLED':   return 'Cancelled';
+    case 'REVISION_REQUESTED': return 'Revision asked for — pick it back up';
+    default:            return 'No action recorded';
+  }
+}
+
 /** Adds the derived status the frontend reads, without hiding what is stored. */
 const present = (row: Row) => ({
   ...row,
   status: outwardStatus(row.storedStatus, row.quoteStatus),
+  nextStep: draftingNextStep(outwardStatus(row.storedStatus, row.quoteStatus), row['quotedCents']),
+  /*
+   * The contract declares these; this table has no columns for them yet.
+   * Sending [] rather than nothing is the difference between an empty section
+   * and a crash: the Deliver drawer called .length on satisfiesRequirementKeys
+   * and, with no error boundary at the time, blanked the whole screen.
+   */
+  inputDocumentIds: (row['inputDocumentIds'] as string[]) ?? [],
+  outputDocumentIds: (row['outputDocumentIds'] as string[]) ?? [],
+  satisfiesRequirementKeys: (row['satisfiesRequirementKeys'] as string[]) ?? [],
 });
 
 export async function compatDraftingRoutes(app: FastifyInstance): Promise<void> {
@@ -189,6 +240,15 @@ export async function compatDraftingRoutes(app: FastifyInstance): Promise<void> 
 
           const orders = rows.map(present);
           return {
+            /*
+             * `requests` is what DraftingListResponse declares and what the
+             * page reads; `orders` is what this route has always sent. Only
+             * `orders` went out, so Drafting.tsx read `requests`, got
+             * undefined, fell back to [] and showed an empty queue however
+             * much work was in it. Both names ship: the contract's name makes
+             * the page work, and the original stays so nothing else breaks.
+             */
+            requests: orders,
             orders,
             total: orders.length,
             openCount: orders.filter(
