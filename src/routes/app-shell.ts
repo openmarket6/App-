@@ -111,7 +111,8 @@ export function isApiPath(url: string): boolean {
     // The compatibility layer the existing React frontend calls.
     url.startsWith('/api/') ||
     url.startsWith('/healthz') ||
-    url.startsWith('/readyz')
+    url.startsWith('/readyz') ||
+    url.startsWith('/version')
   );
 }
 

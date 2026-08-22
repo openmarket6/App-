@@ -14,8 +14,11 @@
  *                without killing it, so it can rejoin when the dependency
  *                recovers.
  *
- * Neither exposes version details, dependency hostnames or configuration --
- * health endpoints are public, and they should not be a reconnaissance tool.
+ *   /version  -- "which commit is this?" Nothing else. See the note on it
+ *                below for why it is public.
+ *
+ * None of them exposes dependency hostnames or configuration -- health
+ * endpoints are public, and they should not be a reconnaissance tool.
  */
 import type { FastifyInstance } from 'fastify';
 import { appPool, servicePool, usingSeparateServiceRole } from '../db/pool.js';
@@ -24,10 +27,40 @@ import { logger } from '../lib/logger.js';
 
 const startedAt = Date.now();
 
+/**
+ * Render sets these on every build. Read once at module load: they do not
+ * change while the process lives, and reading process.env per request would
+ * suggest they might.
+ */
+const commit = process.env['RENDER_GIT_COMMIT'] ?? null;
+const branch = process.env['RENDER_GIT_BRANCH'] ?? null;
+
 export async function healthRoutes(app: FastifyInstance): Promise<void> {
   app.get('/healthz', async () => ({
     status: 'ok',
     uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
+  }));
+
+  /**
+   * Which commit is serving this request.
+   *
+   * This exists because a failed build leaves the PREVIOUS deploy running,
+   * health checks green and all -- so "the API is up" has never been evidence
+   * that the API is current. Until now the only place the live commit appeared
+   * was the Render dashboard, which needs a login and a browser, and an
+   * unattended check could therefore never answer the one question it was for.
+   *
+   * Public, unlike the rest of this file's caution, for a specific reason: the
+   * repository is public, so the SHA reveals nothing a reader could not already
+   * read. If the repository is ever made private, put this behind auth.
+   *
+   * Null when running anywhere other than Render -- locally, or in a container
+   * built by hand -- rather than a guess or a lie.
+   */
+  app.get('/version', async () => ({
+    commit,
+    branch,
+    startedAt: new Date(startedAt).toISOString(),
   }));
 
   app.get('/readyz', async (_req, reply) => {
