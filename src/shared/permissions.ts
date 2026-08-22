@@ -29,6 +29,15 @@ export const CAPABILITIES = [
   'document:read',
   'document:upload',
   'document:delete',
+  /*
+   * Producing a legal instrument -- a Notice of Commencement, a Notice to
+   * Owner, an indemnity -- is a heavier act than uploading a file, so it is a
+   * heavier capability. A defective NOC can stop a first inspection and bears
+   * on lien rights; a bad upload can be replaced.
+   */
+  'document:generate',
+  /** Marking one recorded, served, executed or void. */
+  'document:record',
   // Inspections
   'inspection:read',
   'inspection:schedule',
@@ -144,6 +153,10 @@ const PERMIT_TECH_CAPS: Capability[] = [
   'drafting:request',
   'drafting:quote',
   'drafting:produce',
+  // Permit techs are the people who actually file. Generating and recording
+  // the instruments is the job, not an escalation of it.
+  'document:generate',
+  'document:record',
   'jurisdiction:edit',
   'connector:run',
   'user:read',

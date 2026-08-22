@@ -13,6 +13,7 @@
 import pg from 'pg';
 import { readdir, readFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../db/migrations');
@@ -38,10 +39,21 @@ export async function applyMigrations(): Promise<void> {
   await c.connect();
   try {
     await c.query('create schema if not exists ocs');
+    /*
+     * Same shape as src/db/migrate.ts, checksum column included.
+     *
+     * It diverged once, and the divergence went unnoticed for as long as no new
+     * migration was added: `create table if not exists` on an existing database
+     * is a no-op, so tests kept passing against a table the real runner had
+     * created. The next new migration failed on a not-null checksum. Matching
+     * the runner is what keeps that from happening again.
+     */
     await c.query(`
       create table if not exists ocs.schema_migrations (
-        version    text primary key,
-        applied_at timestamptz not null default now()
+        version     text primary key,
+        checksum    text not null,
+        applied_at  timestamptz not null default now(),
+        duration_ms int
       )
     `);
 
@@ -55,8 +67,12 @@ export async function applyMigrations(): Promise<void> {
     for (const f of files) {
       const version = f.replace(/\.sql$/, '');
       if (applied.has(version)) continue;
-      await c.query(await readFile(join(MIGRATIONS_DIR, f), 'utf8'));
-      await c.query('insert into ocs.schema_migrations (version) values ($1)', [version]);
+      const sql = await readFile(join(MIGRATIONS_DIR, f), 'utf8');
+      await c.query(sql);
+      await c.query(
+        'insert into ocs.schema_migrations (version, checksum) values ($1, $2)',
+        [version, createHash('sha256').update(sql).digest('hex').slice(0, 16)],
+      );
     }
   } finally {
     await c.end();

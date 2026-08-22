@@ -48,6 +48,7 @@ import { compatPortalRoutes } from './routes/compat/portal.js';
 import { compatProjectsRoutes } from './routes/compat/projects.js';
 import { compatComplianceRoutes } from './routes/compat/compliance.js';
 import { compatDocumentsRoutes } from './routes/compat/documents.js';
+import { compatGeneratedDocumentsRoutes } from './routes/compat/generated-documents.js';
 import { compatInvoiceRoutes } from './routes/compat/invoices.js';
 import { compatSupervisionRoutes } from './routes/compat/supervision.js';
 import { supervisionRoutes } from './routes/supervision.js';
@@ -183,11 +184,22 @@ export async function buildServer() {
   app.addHook('onSend', async (req, reply, payload) => {
     reply.header('x-request-id', req.id);
 
-    const type = String(reply.getHeader('content-type') ?? '');
-    reply.header(
-      'content-security-policy',
-      type.includes('text/html') ? htmlContentSecurityPolicy() : JSON_CSP,
-    );
+    /*
+     * A route that already chose a policy keeps it.
+     *
+     * The app shell needs a policy permissive enough to run itself. A generated
+     * legal instrument does not: it is our template wrapped around values
+     * somebody typed into a form, and it should be served under the tightest
+     * policy that still renders. Handing it the shell's policy because both are
+     * text/html would be applying the loosest rule to the least trusted page.
+     */
+    if (!reply.getHeader('content-security-policy')) {
+      const type = String(reply.getHeader('content-type') ?? '');
+      reply.header(
+        'content-security-policy',
+        type.includes('text/html') ? htmlContentSecurityPolicy() : JSON_CSP,
+      );
+    }
 
     return payload;
   });
@@ -284,6 +296,7 @@ export async function buildServer() {
   await app.register(compatProjectsRoutes);
   await app.register(compatComplianceRoutes);
   await app.register(compatDocumentsRoutes);
+  await app.register(compatGeneratedDocumentsRoutes);
   await app.register(compatInvoiceRoutes);
   await app.register(compatSupervisionRoutes);
   await app.register(compatApiRoutes);
