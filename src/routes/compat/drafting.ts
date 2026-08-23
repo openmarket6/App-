@@ -357,11 +357,24 @@ export async function compatDraftingRoutes(app: FastifyInstance): Promise<void> 
 
           const created = await tx.one<{ id: string }>(
             `insert into ocs.drafting_orders
-               (company_id, order_number, project_id, permit_id, title, brief,
+               (company_id, project_id, permit_id, title, brief,
                 services, status, quote_status, requested_by)
+             /*
+              * The number is left to ocs.assign_drafting_order_number.
+              *
+              * The trigger takes pg_advisory_xact_lock on the company before
+              * its max()+1, and only fires when the column arrives null. This
+              * supplied a value, so the trigger skipped and the lock with it —
+              * two staff creating at once both read the same max and the
+              * second hit the unique constraint as an unhandled 500.
+              *
+              * The subquery was also GLOBAL, with no where-company_id clause, and
+              * ran in service context where row-level security is off. So a
+              * contractor's numbering jumped 1206, 1341, 1352 — leaking the
+              * platform's total volume and useless for their own books.
+              */
              values (
                $1,
-               (select coalesce(max(order_number), 1000) + 1 from ocs.drafting_orders),
                $2, $3, $4, $5, $6::text[], 'requested',
                case when $7::boolean then 'draft' else 'none' end::ocs.quote_status,
                $8

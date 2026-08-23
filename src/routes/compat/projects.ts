@@ -186,10 +186,22 @@ export async function compatProjectsRoutes(app: FastifyInstance): Promise<void> 
                (company_id, name, address_line1, city, county, postal_code,
                 municipality_id, parcel_number, valuation_cents, owner_builder,
                 flood_zone, coastal_construction_control_line, created_by,
-                project_number, status)
-             values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,
-                     (select coalesce(max(project_number), 1000) + 1 from ocs.projects),
-                     'active')
+                status)
+             /*
+              * The number is left to ocs.assign_project_number.
+              *
+              * The trigger takes pg_advisory_xact_lock on the company before
+              * its max()+1, and only fires when the column arrives null. This
+              * supplied a value, so the trigger skipped and the lock with it —
+              * two staff creating at once both read the same max and the
+              * second hit the unique constraint as an unhandled 500.
+              *
+              * The subquery was also GLOBAL, with no where-company_id clause, and
+              * ran in service context where row-level security is off. So a
+              * contractor's numbering jumped 1206, 1341, 1352 — leaking the
+              * platform's total volume and useless for their own books.
+              */
+             values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, 'active')
              returning id`,
             [
               companyId, body.name, body.addressLine1, body.city, body.county,

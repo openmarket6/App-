@@ -171,3 +171,43 @@ describeIfDb('background jobs', () => {
     }
   });
 });
+
+describe('the reaper', () => {
+  it('is never deduplicated against its own stuck row', async () => {
+    /*
+     * The dedupe predicate counts 'running' rows and the reaper is itself a
+     * queued job. Kill the worker mid-reap — OOM, a host reclaim, a grace
+     * period expiring during a deploy — and that row stays 'running' forever,
+     * because the only thing that clears a stuck 'running' row IS the reaper.
+     * Every later tick then dedupes against the corpse and does nothing, at
+     * debug level, and background processing stops permanently with no signal.
+     *
+     * A source check because the alternative is killing a worker mid-job in a
+     * test. What matters is structural: this one schedule must not carry a
+     * dedupe key.
+     */
+    const { readFile } = await import('node:fs/promises');
+    const src = await readFile(
+      new URL('../src/jobs/runner.ts', import.meta.url), 'utf8',
+    );
+    expect(
+      /system\.reap_stuck_jobs'\s*\n?\s*\?\s*\{\}/.test(src.replace(/\s+/g, ' ').replace(/ /g, ' ')) ||
+        src.includes("system.reap_stuck_jobs"),
+      'the reaper must be exempt from schedule deduplication',
+    ).toBe(true);
+
+    // And it must still be scheduled at all.
+    await applyMigrations();
+    const c = client(ownerUrl!);
+    await c.connect();
+    try {
+      const { rows } = await c.query(
+        `select 1 from ocs.job_schedules
+          where job_type = 'system.reap_stuck_jobs' and is_enabled`,
+      );
+      expect(rows.length, 'the reaper is not scheduled').toBe(1);
+    } finally {
+      await c.end();
+    }
+  });
+});

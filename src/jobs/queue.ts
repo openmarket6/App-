@@ -115,10 +115,28 @@ export async function claimJobs(queue: string, limit: number, workerId: string):
   );
 }
 
-export async function completeJob(jobId: string, result?: unknown): Promise<void> {
+/**
+ * Mark a job finished — but only if this worker still owns it.
+ *
+ * The ownership clause is the point. Promise.race in the runner ABANDONS a
+ * timed-out handler rather than cancelling it: a handler stuck on a socket
+ * keeps running after its timeout fires, the reaper releases the job, another
+ * worker picks it up, and the original invocation eventually returns and
+ * writes 'succeeded' over a job somebody else is midway through — clearing
+ * locked_by underneath them.
+ *
+ * `locked_by` is the whole guard. Zero rows updated means "I was reaped while
+ * I worked; my result is not wanted", which is a fact worth logging rather
+ * than a failure.
+ */
+export async function completeJob(
+  jobId: string,
+  result?: unknown,
+  ownedBy?: string,
+): Promise<void> {
   await withServiceContext(
     async (tx) => {
-      await tx.query(
+      const res = await tx.query(
         `update ocs.jobs
             set status = 'succeeded',
                 finished_at = now(),
@@ -126,9 +144,17 @@ export async function completeJob(jobId: string, result?: unknown): Promise<void
                 locked_by = null,
                 result = $2,
                 last_error = null
-          where id = $1`,
-        [jobId, result === undefined ? null : JSON.stringify(result)],
+          where id = $1
+            and status = 'running'
+            and ($3::text is null or locked_by = $3)`,
+        [jobId, result === undefined ? null : JSON.stringify(result), ownedBy ?? null],
       );
+      if (res.rowCount === 0) {
+        logger.warn(
+          { jobId, ownedBy },
+          'job finished but was no longer ours — reaped mid-run; result discarded',
+        );
+      }
     },
     { reason: 'complete_job' },
   );

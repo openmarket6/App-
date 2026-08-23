@@ -147,7 +147,28 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
           [documentId, ctx.companyId],
         );
         if (!existing) throw notFound('Document');
-        versionNumber = existing.version_count + 1;
+
+        /*
+         * The next number comes from the versions that EXIST, not from
+         * version_count.
+         *
+         * version_count only advances at /complete, so between an upload-init
+         * and its completion it still reads the old value. The `for update`
+         * above is taken correctly and held correctly, and it was protecting a
+         * number that had not moved.
+         *
+         * This did not need two users to go wrong. Anyone who started an
+         * upload and abandoned it before the PUT left a version row behind
+         * with the number the NEXT init would also choose, and the unique on
+         * (document_id, version_number) turned that into a 500 for whoever
+         * came along afterwards — permanently, for that document.
+         */
+        const next = await tx.one<{ n: number }>(
+          `select coalesce(max(version_number), 0) + 1 as n
+             from ocs.document_versions where document_id = $1`,
+          [documentId],
+        );
+        versionNumber = Math.max(next?.n ?? 1, existing.version_count + 1);
       } else {
         // Verify the parent belongs to this tenant. RLS would block a foreign
         // id anyway; this turns it into a clear 404.

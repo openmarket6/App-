@@ -93,7 +93,7 @@ async function processJob(job: JobRow): Promise<void> {
 
     const result = await runWithTimeout(job, handler);
     recordJobProcessed();
-      await completeJob(job.id, result);
+      await completeJob(job.id, result, WORKER_ID);
     log.info({ durationMs: Date.now() - started }, 'job completed');
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));
@@ -143,8 +143,24 @@ async function tickScheduler(): Promise<void> {
           jobType: schedule.job_type,
           queue: schedule.queue,
           payload: { ...schedule.payload, scheduleName: schedule.name },
-          // One pending run per schedule at a time.
-          dedupeKey: `schedule:${schedule.name}`,
+          /*
+           * One pending run per schedule at a time — EXCEPT the reaper.
+           *
+           * The dedupe predicate counts 'running' rows, and the reaper is
+           * itself a queued job. Kill the worker while it is running (OOM, a
+           * host reclaim, a grace period expiring mid-deploy) and its row stays
+           * 'running' forever, because the only thing that clears a stuck
+           * 'running' row is the reaper. Every later tick then deduplicates
+           * against that corpse and does nothing, at debug level. Background
+           * processing stops permanently and nothing says so; no admin path
+           * recovers it, because retry only works on 'dead'.
+           *
+           * A duplicate reap is harmless — it releases stuck jobs and there is
+           * nothing to release twice. A reaper that cannot be enqueued is not.
+           */
+          ...(schedule.job_type === 'system.reap_stuck_jobs'
+            ? {}
+            : { dedupeKey: `schedule:${schedule.name}` }),
         });
       },
       { reason: 'scheduler_enqueue' },
