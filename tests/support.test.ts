@@ -61,11 +61,30 @@ describeIfDb('support tickets', () => {
   });
 
   it('shows both kinds to staff', async () => {
+    /*
+     * Scoped to THIS ticket, and asserting the two kinds rather than a count.
+     *
+     * It used to be `select count(*) from ocs.support_messages` with no where
+     * clause, run as the owner role -- which bypasses RLS, so it counted every
+     * support message in the database. That passed only because the test
+     * database happened to be empty. Run the suite against a database that has
+     * any other ticket in it and this failed with "expected 6 to be 2", which
+     * names nothing and points at no defect.
+     *
+     * A count also does not test the property in the name. Two rows could both
+     * be public and still satisfy it, while the thing worth pinning is that
+     * staff see the internal note the contractor cannot.
+     */
     const c = client(ownerUrl!);
     await c.connect();
     try {
-      const r = await c.query(`select count(*)::int as n from ocs.support_messages`);
-      expect(r.rows[0].n).toBe(2);
+      const r = await c.query<{ body: string; is_internal: boolean }>(
+        `select body, is_internal from ocs.support_messages
+          where ticket_id = $1 order by is_internal`,
+        [ticketId],
+      );
+      expect(r.rows.map((m) => m.is_internal)).toEqual([false, true]);
+      expect(r.rows.find((m) => m.is_internal)!.body).toContain('wrong drawings');
     } finally {
       await c.end();
     }
