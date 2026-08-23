@@ -14,6 +14,7 @@
  * here. That test is the whole reason this file is safe to trust.
  */
 import type { DocumentKind } from './noc.js';
+import { AS_BUILT_TRADES, AS_BUILT_TRADE_LABELS } from './asBuiltLetter.js';
 
 export type FieldType = 'text' | 'textarea' | 'date' | 'money' | 'number' | 'select';
 
@@ -234,10 +235,81 @@ const CONTRACTOR_AGREEMENT_FIELDS: FieldSpec[] = [
   },
 ];
 
+/**
+ * The trade comes first, and it is a dropdown, because it changes what the rest
+ * of the letter says.
+ *
+ * Every other field is the same whichever trade is chosen; the certification
+ * sentence and the specifics a plans examiner checks are not.
+ */
+const AS_BUILT_LETTER_FIELDS: FieldSpec[] = [
+  {
+    name: 'trade', label: 'Trade this letter certifies', type: 'select', required: true,
+    group: 'The letter',
+    options: AS_BUILT_TRADES.map((t) => ({ value: t, label: AS_BUILT_TRADE_LABELS[t] })),
+    help: 'Departments usually want one letter per trade, signed by that trade\u2019s licence holder.',
+  },
+  {
+    name: 'permitNumber', label: 'Permit number', type: 'text', required: true,
+    group: 'The letter',
+    help: 'How the department files this against the job. Without it the letter arrives attached to nothing.',
+  },
+  {
+    name: 'propertyAddress', label: 'Property address', type: 'text', required: true,
+    group: 'The property', placeholder: '1200 Bay Street, Tampa, FL 33606',
+  },
+  {
+    name: 'parcelId', label: 'Parcel identification number', type: 'text', required: false,
+    group: 'The property', help: 'Most departments index by parcel as well as address.',
+  },
+  {
+    name: 'contractorName', label: 'Certifying contractor\u2019s legal name', type: 'text',
+    required: true, group: 'Who is certifying',
+    help: 'A trade name is not a legal entity. A certification signed in one binds nobody.',
+  },
+  {
+    name: 'contractorLicenseNumber', label: 'Licence number', type: 'text', required: true,
+    group: 'Who is certifying', help: 'The licence is what gives this letter its weight.',
+  },
+  {
+    name: 'contractorAddress', label: 'Contractor address', type: 'text', required: false,
+    group: 'Who is certifying',
+  },
+  {
+    name: 'qualifierName', label: 'Name of the person signing', type: 'text', required: true,
+    group: 'Who is certifying',
+  },
+  {
+    name: 'scopeDescription', label: 'What was installed', type: 'textarea', required: true,
+    group: 'The work',
+    help: '\u201CThe work\u201D does not tell a reviewer what is being certified.',
+  },
+  {
+    name: 'codeEdition', label: 'Code edition', type: 'text', required: true,
+    group: 'The work', placeholder: '2023 Florida Building Code, 8th Edition',
+    help: 'The edition the PERMIT was issued under, not the one in force today.',
+  },
+  {
+    name: 'approvedPlansRevision', label: 'Approved plans revision', type: 'text',
+    required: false, group: 'The work',
+    help: 'Only when the department approved a revision after the original set.',
+  },
+  {
+    name: 'completedOn', label: 'Date the work was completed', type: 'date', required: true,
+    group: 'The work',
+  },
+  {
+    name: 'deviations', label: 'Deviations from the approved plans', type: 'textarea',
+    required: false, group: 'The work',
+    help: 'Left blank, the letter states there were none \u2014 which is a certification in itself. If anything was built differently, say so and how it was approved.',
+  },
+];
+
 export const DOCUMENT_FIELDS: Record<DocumentKind, readonly FieldSpec[]> = {
   NOC: NOC_FIELDS,
   NTO: NTO_FIELDS,
   HOLD_HARMLESS: HOLD_HARMLESS_FIELDS,
+  AS_BUILT_LETTER: AS_BUILT_LETTER_FIELDS,
   CONTRACTOR_AGREEMENT: CONTRACTOR_AGREEMENT_FIELDS,
 };
 

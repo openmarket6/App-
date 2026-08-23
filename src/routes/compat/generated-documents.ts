@@ -40,6 +40,9 @@ const TERMINAL_STATUS: Record<DocumentKind, 'recorded' | 'served' | 'executed'> 
   NTO: 'served',
   HOLD_HARMLESS: 'executed',
   CONTRACTOR_AGREEMENT: 'executed',
+  // Signed by the contractor whose licence backs it. Migration 0042
+  // widened the DB constraint to allow this pairing.
+  AS_BUILT_LETTER: 'executed',
 };
 
 async function scoped<T>(

@@ -15,13 +15,24 @@ import { daysBetween } from '../../shared/calendar.js';
  * should fix them, and generation is refused while any blocking problem stands.
  */
 
-export type DocumentKind = 'NOC' | 'NTO' | 'HOLD_HARMLESS' | 'CONTRACTOR_AGREEMENT';
+export type DocumentKind =
+  | 'NOC' | 'NTO' | 'HOLD_HARMLESS' | 'CONTRACTOR_AGREEMENT'
+  /*
+   * One kind, with the trade as an input, rather than seven.
+   *
+   * The trade changes the certification sentence and the specifics a
+   * reviewer checks — not the shape of the instrument. Seven enum values
+   * would mean a migration every time a department asks for a trade nobody
+   * had thought of, and seven near-identical templates to keep in step.
+   */
+  | 'AS_BUILT_LETTER';
 
 export const DOCUMENT_KIND_LABELS: Record<DocumentKind, string> = {
   NOC: 'Notice of Commencement',
   NTO: 'Notice to Owner',
   HOLD_HARMLESS: 'Hold harmless agreement',
   CONTRACTOR_AGREEMENT: 'Contractor services agreement',
+  AS_BUILT_LETTER: 'As-built letter',
 };
 
 /** Where a problem sits between "cannot produce this" and "check this". */

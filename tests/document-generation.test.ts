@@ -416,7 +416,14 @@ describe('the generator itself', () => {
   });
 
   it('knows its own kinds', () => {
-    expect(DOCUMENT_KINDS).toHaveLength(4);
+    /*
+     * Named rather than counted. A length assertion says nothing about WHICH
+     * kinds exist, so it fails on every addition — noise — while a kind
+     * quietly renamed would slip past it.
+     */
+    expect([...DOCUMENT_KINDS].sort()).toEqual(
+      ['AS_BUILT_LETTER', 'CONTRACTOR_AGREEMENT', 'HOLD_HARMLESS', 'NOC', 'NTO'],
+    );
     for (const k of DOCUMENT_KINDS) expect(isDocumentKind(k)).toBe(true);
     expect(isDocumentKind('DEED')).toBe(false);
   });
@@ -515,6 +522,11 @@ describe('the form and the validator', () => {
         // Dates get a real date: a marker string in a date field is a blocking
         // problem, which would make this test fail for the wrong reason.
         else if (f.type === 'date') filled[f.name] = '2026-02-20';
+        // And a dropdown gets a real option, for the same reason. A marker in
+        // an enumerated field is not a value the validator can accept, so the
+        // document would be refused and this test would report a missing field
+        // when what it actually found was an invalid one.
+        else if (f.type === 'select') filled[f.name] = f.options?.[0]?.value ?? '';
         else filled[f.name] = `ZZ-${f.name}-ZZ`;
       }
       if (kind === 'CONTRACTOR_AGREEMENT') {

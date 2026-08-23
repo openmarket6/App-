@@ -1,0 +1,25 @@
+-- =============================================================================
+-- 0041  As-built letters
+-- =============================================================================
+--
+-- An as-built LETTER is not an as-built PLAN SET, and conflating them is the
+-- mistake this migration is partly here to prevent.
+--
+-- A plan set is a drawing: the approved set revised to show what was actually
+-- built, sealed by the design professional of record. That is drafting work and
+-- it already exists in this system, as the AS_BUILT drafting service.
+--
+-- A letter is a page. The licensed trade contractor states, over their own
+-- signature and licence number, that what they installed is what the approved
+-- plans called for and complies with the code edition the permit was issued
+-- under. Departments ask for these at closeout, usually per trade. One that
+-- asks for a letter will not accept drawings.
+--
+-- ONE KIND, WITH THE TRADE AS AN INPUT. Roofing, electrical, plumbing,
+-- mechanical, structural, building and windows-and-doors all produce the same
+-- instrument; what differs is the operative sentence and the specifics a plans
+-- examiner checks. Seven enum values would mean a migration every time a
+-- department asks for a trade nobody had thought of, and seven near-identical
+-- templates to keep in step.
+
+alter type ocs.generated_document_kind add value if not exists 'AS_BUILT_LETTER';

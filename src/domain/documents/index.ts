@@ -12,14 +12,16 @@ import {
   validateNoc, validateNto, canGenerate,
 } from './noc.js';
 import { validateHoldHarmless, validateContractorAgreement } from './agreements.js';
+import { validateAsBuiltLetter } from './asBuiltLetter.js';
 import { renderDocument, type RenderMeta } from './render.js';
 
 export * from './noc.js';
 export * from './agreements.js';
+export * from './asBuiltLetter.js';
 export { renderDocument, esc, type RenderMeta } from './render.js';
 
 export const DOCUMENT_KINDS: readonly DocumentKind[] = [
-  'NOC', 'NTO', 'HOLD_HARMLESS', 'CONTRACTOR_AGREEMENT',
+  'NOC', 'NTO', 'HOLD_HARMLESS', 'CONTRACTOR_AGREEMENT', 'AS_BUILT_LETTER',
 ];
 
 export function isDocumentKind(v: unknown): v is DocumentKind {
@@ -37,6 +39,7 @@ export function validateDocument(
     case 'NTO': return validateNto(input, now);
     case 'HOLD_HARMLESS': return validateHoldHarmless(input, now);
     case 'CONTRACTOR_AGREEMENT': return validateContractorAgreement(input);
+    case 'AS_BUILT_LETTER': return validateAsBuiltLetter(input, now);
   }
 }
 

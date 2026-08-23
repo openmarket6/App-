@@ -32,6 +32,16 @@ interface FieldSpec {
   required: boolean;
   help?: string;
   placeholder?: string;
+  /*
+   * Choices for an enumerated field, served by the API alongside the field.
+   *
+   * The server has had 'select' in its FieldType since the beginning and this
+   * screen had no branch for it — so an enumerated field rendered as a free
+   * text box, and whatever somebody typed was refused by a validator holding a
+   * fixed list they could not see. The as-built letter's trade is the first
+   * field to actually use it.
+   */
+  options?: Array<{ value: string; label: string }>;
   group: string;
 }
 
@@ -343,7 +353,27 @@ export default function DocumentsGenerate() {
                           {f.label}
                           {f.required && <span className="text-rose-600"> *</span>}
                         </span>
-                        {f.type === 'textarea' ? (
+                        {f.type === 'select' ? (
+                          <select
+                            className={`w-full rounded border px-2 py-2 bg-white ${
+                              p?.severity === 'blocking' ? 'border-rose-400' : 'border-line'
+                            }`}
+                            value={values[f.name] ?? ''}
+                            onChange={(e) => setValues({ ...values, [f.name]: e.target.value })}
+                          >
+                            {/*
+                              * An explicit empty first option rather than a
+                              * silently pre-selected first trade. A dropdown
+                              * that arrives already answered is one somebody
+                              * scrolls past — and this one decides what the
+                              * letter certifies.
+                              */}
+                            <option value="">Choose one…</option>
+                            {(f.options ?? []).map((o) => (
+                              <option key={o.value} value={o.value}>{o.label}</option>
+                            ))}
+                          </select>
+                        ) : f.type === 'textarea' ? (
                           <textarea
                             rows={3}
                             className={`w-full rounded border px-2 py-2 ${

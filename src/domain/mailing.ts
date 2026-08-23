@@ -48,6 +48,12 @@ export const MAIL_CLASS_LABELS: Record<MailClass, string> = {
  */
 export const REQUIRED_MAIL_CLASS: Record<DocumentKind, MailClass> = {
   /*
+   * Usually uploaded to a permit portal rather than posted. When it does go
+   * by mail there is nothing to prove about service — the department either
+   * has it on the permit or does not.
+   */
+  AS_BUILT_LETTER: 'first_class',
+  /*
    * 713.06(2)(a). The notice must be served, and the claimant carries the
    * burden of showing it was. A return receipt is the cheapest way to carry it.
    */

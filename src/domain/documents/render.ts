@@ -18,6 +18,10 @@ import {
   type DocumentKind, type NocInput, type NtoInput, NTO_DEADLINE_DAYS,
 } from './noc.js';
 import type { HoldHarmlessInput, ContractorAgreementInput } from './agreements.js';
+import {
+  AS_BUILT_TRADE_SPEC, AS_BUILT_TRADE_LABELS, isAsBuiltTrade,
+  type AsBuiltLetterInput,
+} from './asBuiltLetter.js';
 
 /** HTML-escape. Every value that reaches the page goes through this. */
 export function esc(v: unknown): string {
@@ -426,6 +430,108 @@ export function renderContractorAgreement(
 // -----------------------------------------------------------------------------
 
 /** Render any kind. The caller has already validated; this only draws. */
+/**
+ * An as-built letter.
+ *
+ * Laid out as a LETTER, not as a form. The instruments above are filings and
+ * read as field/value pairs; this one is addressed to a building official and
+ * signed by a licensed contractor, and a department that asked for a letter
+ * and received a form will say so.
+ *
+ * The operative sentence and the checkable specifics both come from the trade
+ * spec, so adding a trade is one entry there rather than an edit here.
+ */
+export function renderAsBuiltLetter(
+  input: Partial<AsBuiltLetterInput>,
+  meta: RenderMeta,
+): string {
+  const trade = isAsBuiltTrade(input.trade) ? input.trade : null;
+  const spec = trade ? AS_BUILT_TRADE_SPEC[trade] : null;
+  const tradeLabel = trade ? AS_BUILT_TRADE_LABELS[trade] : '';
+
+  const inner = `
+<section>
+  <dl>
+    <div class="f"><dt>Date</dt><dd>${day(meta.generatedAt)}</dd></div>
+    <div class="f"><dt>Permit number</dt><dd>${val(input.permitNumber)}</dd></div>
+    <div class="f"><dt>Property</dt><dd>${val(input.propertyAddress)}</dd></div>
+    <div class="f"><dt>Parcel</dt><dd>${val(input.parcelId)}</dd></div>
+  </dl>
+</section>
+
+<section>
+  <p>To the Building Official:</p>
+  <p>
+    The undersigned, ${val(input.contractorName)}, holder of Florida licence
+    ${val(input.contractorLicenseNumber)}, performed the ${esc(tradeLabel.toLowerCase())}
+    work under the permit identified above and certifies that
+    ${spec ? esc(spec.certifies) : val(null)}.
+  </p>
+  <p>
+    The work was completed on ${day(input.completedOn)} in compliance with
+    ${val(input.codeEdition)}${spec ? ` (${esc(spec.codeChapter)})` : ''}, and in
+    accordance with the plans approved for this permit${
+      input.approvedPlansRevision
+        ? `, revision ${esc(String(input.approvedPlansRevision))}`
+        : ''
+    }.
+  </p>
+</section>
+
+<section>
+  <h2>Work performed</h2>
+  <p>${val(input.scopeDescription)}</p>
+</section>
+
+${spec ? `<section>
+  <h2>As installed</h2>
+  <dl>${spec.prompts.map((label) => field(label, val(null))).join('')}</dl>
+</section>` : ''}
+
+<section>
+  <h2>Deviations from the approved plans</h2>
+  <p>${
+    input.deviations && String(input.deviations).trim()
+      ? esc(String(input.deviations))
+      : 'None. The work as installed matches the approved plans.'
+  }</p>
+</section>
+
+<section>
+  <p>
+    I certify under penalty of perjury that the foregoing is true and correct to
+    the best of my knowledge and belief.
+  </p>
+  <dl>
+    <div class="f"><dt>Contractor</dt><dd>${val(input.contractorName)}</dd></div>
+    <div class="f"><dt>Address</dt><dd>${val(input.contractorAddress)}</dd></div>
+    <div class="f"><dt>Licence number</dt><dd>${val(input.contractorLicenseNumber)}</dd></div>
+    <div class="f"><dt>Signed by</dt><dd>${val(input.qualifierName)}</dd></div>
+  </dl>
+  <div class="sigline">Signature of qualifier &mdash; ${val(input.qualifierName)}</div>
+</section>
+${input.notaryBlock ? `
+<section>
+  <h2>Notary</h2>
+  <p>
+    Sworn to and subscribed before me by means of physical presence or online
+    notarization, this <span class="blank">&nbsp;&nbsp;&nbsp;</span> day of
+    <span class="blank">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span>, 20<span class="blank">&nbsp;&nbsp;</span>,
+    by ${val(input.qualifierName)}, who is personally known to me or has produced
+    <span class="blank">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span> as identification.
+  </p>
+  <div class="sigline">Notary Public, State of Florida</div>
+</section>` : ''}
+`;
+
+  return page(
+    `As-Built Letter${tradeLabel ? ` \u2014 ${tradeLabel}` : ''}`,
+    'Certification of completed work',
+    inner,
+    meta,
+  );
+}
+
 export function renderDocument(
   kind: DocumentKind,
   input: Record<string, unknown>,
@@ -437,5 +543,7 @@ export function renderDocument(
     case 'HOLD_HARMLESS': return renderHoldHarmless(input as Partial<HoldHarmlessInput>, meta);
     case 'CONTRACTOR_AGREEMENT':
       return renderContractorAgreement(input as Partial<ContractorAgreementInput>, meta);
+    case 'AS_BUILT_LETTER':
+      return renderAsBuiltLetter(input as Partial<AsBuiltLetterInput>, meta);
   }
 }
