@@ -171,6 +171,17 @@ const CLIENT_CAPS: Capability[] = [
   'portal:request_permit',
   // Scoped reads. The client scoping layer, not this table, is what limits
   // these to their own rows — this only says the shape of data is visible.
+  //
+  // 'client:read' is how a contractor learns its OWN company record. Without
+  // it every portal page 403'd on /api/clients -- PortalShell asks for it on
+  // every render to put the company's name in the sidebar, so each contractor
+  // saw the placeholder "Your company" for the whole session, and
+  // PortalDashboard had nothing to show either. The two routes it opens,
+  // GET /api/clients and GET /api/clients/:id, both run through scoped(),
+  // which for a CLIENT discards the requested id and substitutes their own
+  // company under withTenant -- so this grants a contractor exactly one row:
+  // itself. See the cross-tenant cases in tenant-isolation.test.ts.
+  'client:read',
   'permit:read',
   'document:read',
   'document:upload',
