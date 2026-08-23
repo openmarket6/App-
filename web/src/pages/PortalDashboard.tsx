@@ -85,6 +85,25 @@ export default function PortalDashboard() {
     enabled: !!clientId,
   });
 
+  /*
+   * Which of the reads behind the action list failed.
+   *
+   * Every one of these contributes items to `todos`, and a failure removes its
+   * items silently -- the list simply comes back shorter. Naming them lets the
+   * screen say what it could not check instead of implying it checked
+   * everything.
+   */
+  const ACTION_QUERIES = [
+    { label: 'your insurance and licences', q: complianceQ },
+    { label: 'your agreements', q: signingQ },
+    { label: 'your invoices', q: invoicesQ },
+    { label: 'your documents', q: documentsQ },
+    { label: 'your drawing requests', q: draftingQ },
+    { label: 'your permits', q: permitsQ },
+  ];
+  const couldNotLoad = ACTION_QUERIES.filter((x) => x.q.isError).map((x) => x.label);
+  const couldNotLoadError = ACTION_QUERIES.find((x) => x.q.isError)?.q.error ?? null;
+
   const permits = permitsQ.data?.permits ?? [];
   const active = permits.filter((p) => !TERMINAL_STAGES.includes(p.stage));
   const verdict = complianceQ.data?.verdict ?? null;
@@ -364,7 +383,31 @@ export default function PortalDashboard() {
           )}
         </div>
 
-        {todos.length === 0 ? (
+        {todos.length === 0 && couldNotLoad.length > 0 ? (
+          /*
+           * The list is empty because something did not load, and saying
+           * "nothing is waiting on you" here would be a lie with consequences.
+           *
+           * This list is assembled from six requests. If the compliance one
+           * fails, a contractor whose general liability lapsed last week is
+           * told their paperwork is in order; if the signing one fails, an
+           * unsigned agreement disappears. Nothing about the screen looks
+           * broken -- an empty list and a reassuring sentence is exactly what
+           * a contractor with nothing outstanding sees.
+           */
+          <div className="card">
+            <ErrorState
+              title={`We could not check ${couldNotLoad.join(' or ')}`}
+              error={couldNotLoadError}
+              onRetry={() => { for (const x of ACTION_QUERIES) void x.q.refetch(); }}
+              compact
+            />
+            <p className="mt-2 text-[13px] text-ink-soft leading-snug">
+              This list is incomplete. Please do not read it as nothing being
+              outstanding — try again, or contact us if it keeps failing.
+            </p>
+          </div>
+        ) : todos.length === 0 ? (
           <div className="card">
             <EmptyState
               title="Nothing is waiting on you"

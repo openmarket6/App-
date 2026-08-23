@@ -167,7 +167,17 @@ export default function Supervision() {
       )}
       {loading && <LoadingPanel label="Loading the supervision record…" rows={5} />}
 
-      {!loading && managed.length === 0 && (
+      {/*
+        * Not shown when the load failed. An error panel above and "no
+        * managed-licence permits" below it are two contradictory statements on
+        * one screen, and the reassuring one is the one people believe.
+        *
+        * Worth knowing what this list depends on: `managed` filters permits on
+        * serviceLine, which the permits endpoint returned as a hard-coded
+        * 'EXPEDITING' until it was fixed. This screen said "none" to everyone,
+        * always, and looked exactly like a firm with no managed-licence work.
+        */}
+      {!loading && !permitsQ.isError && managed.length === 0 && (
         <div className="card">
           <EmptyState
             title="No managed-licence permits"
