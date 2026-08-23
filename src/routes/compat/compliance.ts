@@ -16,6 +16,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { withTenant, withServiceContext, type Tx } from '../../db/tenant.js';
 import { requireApiAuth, requireCapability, refuseReadOnly } from './auth.js';
+import { resolveClientId } from './client-scope.js';
 import { parse, clientIp } from '../../lib/http-helpers.js';
 import { writeAudit } from '../../lib/audit.js';
 import { notFound, badRequest, forbidden } from '../../lib/errors.js';
@@ -286,7 +287,7 @@ export async function compatComplianceRoutes(app: FastifyInstance): Promise<void
         'compliance record',
       );
 
-      const companyId = auth.role === 'CLIENT' ? auth.clientId : (body.clientId ?? null);
+      const companyId = resolveClientId(req, body.clientId);
       if (!companyId) throw badRequest('A compliance record must belong to a contractor');
 
       const result = await scoped(
