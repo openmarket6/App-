@@ -30,6 +30,22 @@ const { Pool } = pg;
 pg.types.setTypeParser(20, (v) => v); // int8
 pg.types.setTypeParser(1700, (v) => v); // numeric
 
+/**
+ * Return `date` columns as the calendar day they are, not as an instant.
+ *
+ * node-pg parses a `date` into a JS Date at UTC midnight. Every consumer here
+ * treats these as calendar days -- `expiresAt: string`, compared with
+ * `calendarDay()` in Florida time -- so that Date is then re-interpreted as a
+ * moment and lands on the PREVIOUS day for anyone west of UTC. A policy valid
+ * through 1 June read as expired all day on 1 June, and compliance expiry is a
+ * gate on filing: it blocked permits that should have gone out.
+ *
+ * Fixed here rather than with `::text` at each call site because there are 26
+ * date columns and the next one added would inherit the bug. The declared
+ * TypeScript types already say `string`; this makes that true.
+ */
+pg.types.setTypeParser(1082, (v) => v); // date -> 'YYYY-MM-DD'
+
 function createPool(connectionString: string, name: string): pg.Pool {
   const pool = new Pool({
     connectionString,
