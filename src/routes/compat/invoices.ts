@@ -13,6 +13,7 @@
  * pass-through line that is not a government fee (0030).
  */
 import type { FastifyInstance, FastifyRequest } from 'fastify';
+import { isPast } from '../../shared/calendar.js';
 import { z } from 'zod';
 import { withTenant, withServiceContext, type Tx } from '../../db/tenant.js';
 import { requireApiAuth, requireCapability } from './auth.js';
@@ -95,7 +96,9 @@ function present(row: Row, lines: InvoiceLine[] = []) {
   let status = TO_OUTWARD[storedStatus] ?? 'DRAFT';
   if (status !== 'PAID' && status !== 'VOID' && status !== 'DRAFT') {
     if (paid > 0 && paid < total) status = 'PARTIAL';
-    else if (row.dueAt && new Date(row.dueAt) < new Date() && paid < total) status = 'OVERDUE';
+    // due_on is a `date`. Comparing it to an instant made an invoice due today
+    // read OVERDUE from 8pm yesterday, which is a dunning email nobody earned.
+    else if (isPast(row.dueAt) && paid < total) status = 'OVERDUE';
   }
 
   return {

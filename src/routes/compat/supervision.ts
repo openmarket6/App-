@@ -21,6 +21,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { withTenant, withServiceContext, type Tx } from '../../db/tenant.js';
 import { requireApiAuth, requireCapability, refuseReadOnly } from './auth.js';
+import { resolveClientId } from './client-scope.js';
 import { parse, clientIp, userAgent } from '../../lib/http-helpers.js';
 import { writeAudit } from '../../lib/audit.js';
 import {
@@ -1252,6 +1253,124 @@ export async function compatSupervisionRoutes(app: FastifyInstance): Promise<voi
    * Administrator-only, deliberately: this is the firm's own licence going on
    * somebody else's permit, which is the most consequential row in the system.
    */
+  /**
+   * The supervisors this firm has, and what each is carrying.
+   *
+   * There has been a POST to create one and no way to read them back: the list
+   * handler lives on /v1, which this application cannot reach. So a
+   * coordinator could register a supervisor, see a 201, and then have no way to
+   * tell whether the second one saved, whether a name was mistyped, or who is
+   * already at their engagement limit. That is the setup flow for the managed
+   * licence line, done blind.
+   *
+   * `activeEngagements` against `maxActiveEngagements` is the number that
+   * matters: a supervisor at their cap cannot take another job, and finding
+   * that out when a permit is ready to file is finding out too late.
+   */
+  app.get(
+    '/api/supervision/supervisors',
+    { preHandler: [requireApiAuth, requireCapability('supervision:read')] },
+    async () =>
+      withServiceContext(
+        async (tx) => {
+          const rows = await tx.many(
+            `select s.id, s.user_id as "userId", s.display_name as "displayName",
+                    s.phone, s.trade_ids as "tradeIds",
+                    s.service_counties as "serviceCounties",
+                    s.max_active_engagements as "maxActiveEngagements",
+                    s.max_visits_per_day as "maxVisitsPerDay",
+                    s.is_active as active,
+                    s.hired_on as "hiredOn",
+                    s.onboarded_at as "onboardedAt",
+                    s.briefed_at as "briefedAt",
+                    u.email,
+                    (select count(*) from ocs.supervision_engagements e
+                      where e.supervisor_id = s.id
+                        and e.status in ('accepted','active')) as "activeEngagements",
+                    (select count(*) from ocs.supervision_visits v
+                      where v.supervisor_id = s.id
+                        and v.status in ('required','scheduled')) as "openVisits"
+               from ocs.supervisors s
+               left join ocs.app_users u on u.id = s.user_id
+              where s.deleted_at is null
+              order by s.is_active desc, s.display_name`,
+          );
+          return { supervisors: rows, total: rows.length };
+        },
+        { reason: 'list_supervisors' },
+      ),
+  );
+
+  /**
+   * Engagements, which is where a managed licence actually lands on a job.
+   *
+   * Same gap as supervisors: creatable, unreadable. An engagement is the record
+   * that this firm's qualifier is responsible for a particular site, so "which
+   * ones are open" is not an administrative detail — it is the list of places
+   * somebody has to be.
+   *
+   * Scoped, not service-context: a contractor may read their own engagements,
+   * and pinning a CLIENT to their own company is what makes that safe.
+   */
+  app.get(
+    '/api/supervision/engagements',
+    { preHandler: [requireApiAuth, requireCapability('supervision:read')] },
+    async (req) => {
+      const q = parse(
+        z.object({
+          clientId: z.string().uuid().optional(),
+          status: z.enum([
+            'requested', 'quoted', 'accepted', 'active',
+            'on_hold', 'completed', 'cancelled', 'terminated',
+          ]).optional(),
+        }),
+        req.query,
+        'query',
+      );
+      const companyId = resolveClientId(req, q.clientId);
+
+      return scoped(req, async (tx) => {
+        const rows = await tx.many(
+          `select e.id, e.company_id as "clientId",
+                  e.engagement_number as "engagementNumber",
+                  e.project_id as "projectId", e.permit_id as "permitId",
+                  e.trade_id as "tradeId", t.name as trade,
+                  e.service_license_id as "serviceLicenseId",
+                  l.license_number as "licenseNumber",
+                  e.supervisor_id as "supervisorId",
+                  s.display_name as "supervisorName",
+                  e.status::text as status,
+                  e.site_address as "siteAddress", e.site_city as "siteCity",
+                  e.site_county as "siteCounty",
+                  e.scope_summary as "scopeSummary",
+                  e.estimated_value_cents as "estimatedValueCents",
+                  e.requested_start_date as "requestedStartDate",
+                  e.expected_completion_date as "expectedCompletionDate",
+                  e.terms_accepted_at as "termsAcceptedAt",
+                  e.activated_at as "activatedAt",
+                  e.completed_at as "completedAt",
+                  c.name as "clientName",
+                  (select count(*) from ocs.supervision_visits v
+                    where v.engagement_id = e.id) as "visitCount",
+                  (select count(*) from ocs.supervision_visits v
+                    where v.engagement_id = e.id and v.status = 'completed') as "visitsCompleted"
+             from ocs.supervision_engagements e
+             left join ocs.trades t on t.id = e.trade_id
+             left join ocs.service_licenses l on l.id = e.service_license_id
+             left join ocs.supervisors s on s.id = e.supervisor_id
+             left join ocs.companies c on c.id = e.company_id
+            where e.deleted_at is null
+              and ($1::uuid is null or e.company_id = $1::uuid)
+              and ($2::text is null or e.status::text = $2::text)
+            order by e.created_at desc
+            limit 500`,
+          [companyId, q.status ?? null],
+        );
+        return { engagements: rows, total: rows.length };
+      }, companyId);
+    },
+  );
+
   app.get(
     '/api/supervision/licenses',
     { preHandler: [requireApiAuth, requireCapability('settings:read')] },

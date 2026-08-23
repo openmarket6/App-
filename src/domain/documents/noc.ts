@@ -1,3 +1,4 @@
+import { daysBetween } from '../../shared/calendar.js';
 /**
  * Notice of Commencement, and Notice to Owner.
  *
@@ -355,8 +356,19 @@ export function validateNto(
         detail: 'That is not a valid date.',
       });
     } else {
-      const reference = input.servedDate ? Date.parse(input.servedDate) : now.getTime();
-      const daysElapsed = Math.floor((reference - first) / 86_400_000);
+      /*
+       * Counted on the Florida calendar, not in milliseconds.
+       *
+       * `firstFurnishingDate` is a bare date; `now` is an instant. Subtracting
+       * one from the other made the 45th day end at 8pm Florida time, so a
+       * notice prepared that evening was reported as beyond the window when it
+       * was still timely. A contractor told they are too late may not serve at
+       * all, and the lien goes with it.
+       */
+      const daysElapsed = daysBetween(
+        input.firstFurnishingDate,
+        input.servedDate ?? now,
+      ) ?? 0;
 
       if (daysElapsed > NTO_DEADLINE_DAYS) {
         problems.push({

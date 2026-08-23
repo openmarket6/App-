@@ -18,6 +18,7 @@
  * layer rather than reimplementing it.
  */
 import type { FastifyInstance } from 'fastify';
+import { isPast } from '../../shared/calendar.js';
 import { z } from 'zod';
 import { requireApiAuth, requireCapability } from './auth.js';
 import { CLIENT_COLUMNS, presentClient } from './client-shape.js';
@@ -803,7 +804,14 @@ export async function compatDetailRoutes(app: FastifyInstance): Promise<void> {
             const expiresOn = licence.expires_on
               ? new Date(licence.expires_on).toISOString().slice(0, 10)
               : null;
-            if (expiresOn && Date.parse(expiresOn) < Date.now()) {
+            /*
+             * On the Florida calendar. The normalisation above got the value
+             * right and the comparison still got the day wrong: Date.parse of a
+             * bare date is UTC midnight, so a licence expiring on 23 July read
+             * as expired from 8pm on the 22nd — and this is a filing gate, so a
+             * managed-licence permit could not be filed that evening.
+             */
+            if (isPast(expiresOn)) {
               gaps.push({
                 kind: 'LICENCE_EXPIRED',
                 detail: `${licence.qualifier_name}'s licence expired on ${expiresOn}.`,

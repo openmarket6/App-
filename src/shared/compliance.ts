@@ -1,4 +1,5 @@
 import type { Cents, ID } from './types.js';
+import { daysBetween } from './calendar.js';
 
 /**
  * Contractor compliance.
@@ -119,7 +120,6 @@ export const DEFAULT_COMPLIANCE_POLICY: ComplianceRequirementSpec[] = [
 
 export const EXPIRING_SOON_DAYS = 30;
 
-const DAY_MS = 86_400_000;
 
 export function computeComplianceStatus(
   item: Pick<ComplianceItem, 'kind' | 'expiresAt' | 'status'>,
@@ -130,9 +130,14 @@ export function computeComplianceStatus(
   if (item.status === 'MISSING') return 'MISSING';
   if (NON_EXPIRING_KINDS.includes(item.kind) || !item.expiresAt) return 'VALID';
 
-  const exp = Date.parse(item.expiresAt);
-  if (!Number.isFinite(exp)) return 'VALID';
-  const daysLeft = Math.floor((exp - now.getTime()) / DAY_MS);
+  /*
+   * Counted on the Florida calendar. expires_at is a `date` column, and
+   * comparing it to an instant made a policy expiring on 1 June read EXPIRED
+   * from 8pm on 31 May — and compliance gates filing, so a contractor lost an
+   * evening of work they were entitled to.
+   */
+  const daysLeft = daysBetween(now, item.expiresAt);
+  if (daysLeft === null) return 'VALID';
   if (daysLeft < 0) return 'EXPIRED';
   if (daysLeft <= EXPIRING_SOON_DAYS) return 'EXPIRING_SOON';
   return 'VALID';
@@ -140,9 +145,7 @@ export function computeComplianceStatus(
 
 export function daysUntilExpiry(item: Pick<ComplianceItem, 'expiresAt'>, now: Date = new Date()): number | null {
   if (!item.expiresAt) return null;
-  const exp = Date.parse(item.expiresAt);
-  if (!Number.isFinite(exp)) return null;
-  return Math.floor((exp - now.getTime()) / DAY_MS);
+  return daysBetween(now, item.expiresAt);
 }
 
 export interface ComplianceGap {

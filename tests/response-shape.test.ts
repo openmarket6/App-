@@ -290,13 +290,12 @@ describeIfDb('what the API puts on the wire', () => {
     { url: '/api/supervision/visits', expect: (b) => b.visits?.length },
     { url: '/api/supervision/licenses', expect: (b) => b.licenses?.length },
     /*
-     * Not listed here: /api/supervision/engagements and .../supervisors.
-     * Both exist as POST only. An administrator can register a supervisor or
-     * open an engagement and has no way to read either back — the list
-     * handlers live on /v1, which the application cannot reach. No screen
-     * calls them today, so this is a gap rather than a break, and inventing
-     * endpoints to satisfy a test would be the wrong way round.
+     * These two were POST-only until the gap was closed: creatable and
+     * unreadable, which is the setup flow for the managed licence line done
+     * blind. They are here now because they exist, not to make a test pass.
      */
+    { url: '/api/supervision/supervisors', expect: (b) => b.supervisors?.length },
+    { url: '/api/supervision/engagements', expect: (b) => b.engagements?.length },
     { url: `/api/supervision/verdict/${PERMIT}`, expect: (b) => b.permitId },
     { url: '/api/generated-documents/kinds', expect: (b) => b.kinds?.length },
     {
