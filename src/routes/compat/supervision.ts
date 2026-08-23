@@ -20,7 +20,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { withTenant, withServiceContext, type Tx } from '../../db/tenant.js';
-import { requireApiAuth, requireCapability } from './auth.js';
+import { requireApiAuth, requireCapability, refuseReadOnly } from './auth.js';
 import { parse, clientIp, userAgent } from '../../lib/http-helpers.js';
 import { writeAudit } from '../../lib/audit.js';
 import {
@@ -1644,7 +1644,7 @@ export async function compatSupervisionRoutes(app: FastifyInstance): Promise<voi
    */
   app.post(
     '/api/supervision/engagements/:id/accept-terms',
-    { preHandler: [requireApiAuth, requireCapability('supervision:read')] },
+    { preHandler: [requireApiAuth, requireCapability('supervision:read'), refuseReadOnly] },
     async (req) => {
       const auth = req.apiAuth!;
       const { id } = parse(z.object({ id: z.string().uuid() }), req.params, 'parameters');

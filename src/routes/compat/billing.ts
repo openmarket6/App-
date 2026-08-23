@@ -17,7 +17,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { withTenant, withServiceContext, type Tx } from '../../db/tenant.js';
-import { requireApiAuth, requireCapability } from './auth.js';
+import { requireApiAuth, requireCapability, refuseReadOnly } from './auth.js';
 import { parse, clientIp, userAgent } from '../../lib/http-helpers.js';
 import { writeAudit } from '../../lib/audit.js';
 import { notFound, badRequest, forbidden, conflict } from '../../lib/errors.js';
@@ -146,7 +146,7 @@ export async function compatBillingRoutes(app: FastifyInstance): Promise<void> {
    */
   app.post(
     '/api/billing/quote',
-    { preHandler: [requireApiAuth, requireCapability('billing:read')] },
+    { preHandler: [requireApiAuth, requireCapability('billing:read'), refuseReadOnly] },
     async (req) => {
       const body = parse(
         z.object({
