@@ -18,6 +18,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "typecheck:web": "npm run typecheck --prefix web",
     "test": "vitest run",
+    "preflight": "bash scripts/preflight.sh",
     "test:watch": "vitest"
   },
   "dependencies": {
