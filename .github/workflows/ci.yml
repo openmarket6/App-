@@ -1,0 +1,98 @@
+# Continuous integration.
+#
+# `npm run preflight` is the source of truth for what must be true before this
+# ships, and this file exists so nobody has to remember to run it. It is the
+# same script, on every push, with the one thing a laptop has and a fresh
+# runner does not: a migrated database.
+#
+# That ordering is the whole point. Preflight refuses to run its suite against
+# an unmigrated database precisely because the tests SKIP when the connection
+# variables are missing and still report success. A runner that started an
+# empty Postgres and went straight to preflight would fail on the database
+# check -- correctly. So the migration runner goes first, and it is the real
+# one from src/db/migrate.ts, not a hand-copied schema that could drift.
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preflight:
+    name: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ocs_ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/ocs_ci
+      TEST_APP_DATABASE_URL: postgresql://ocs_app:ci@127.0.0.1:5432/ocs_ci
+      TEST_SERVICE_DATABASE_URL: postgresql://ocs_service:ci@127.0.0.1:5432/ocs_ci
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            web/package-lock.json
+
+      - name: Create the application database roles
+        # 0008_rls.sql creates both roles NOLOGIN behind an `if not exists`, so
+        # creating them here with a login and a password is what lets the app
+        # and service connections work while leaving the migration untouched.
+        # Without this the suite cannot connect as ocs_app and every
+        # row-level-security test would be unable to run.
+        run: |
+          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          do $$
+          begin
+            if not exists (select 1 from pg_roles where rolname='ocs_app') then
+              create role ocs_app login password 'ci';
+            end if;
+            if not exists (select 1 from pg_roles where rolname='ocs_service') then
+              create role ocs_service login password 'ci';
+            end if;
+          end$$;
+          grant all on database ocs_ci to ocs_app, ocs_service;
+          SQL
+
+      - name: Install API dependencies
+        run: npm ci
+
+      - name: Install web dependencies
+        run: npm ci --prefix web
+
+      - name: Apply migrations
+        # The real runner, so a migration that cannot apply fails here rather
+        # than in production.
+        env:
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+        run: npm run migrate
+
+      - name: Preflight
+        # Typechecks both sides, proves the database is reachable and migrated,
+        # runs the suite, builds the web app, checks the shell against what the
+        # build actually wrote, and lists configuration gaps.
+        run: npm run preflight
