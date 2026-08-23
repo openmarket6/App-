@@ -36,6 +36,7 @@
  * that publishes its own form will want theirs.
  */
 import type { FieldProblem } from './noc.js';
+import { isAsBuiltTrade, type AsBuiltTrade } from '../../shared/asBuiltTrades.js';
 
 /**
  * The trades a letter can be issued for.
@@ -46,26 +47,17 @@ import type { FieldProblem } from './noc.js';
  * installer certifies product approval numbers and anchoring. A generic
  * sentence covering all of them says nothing a plans examiner can check.
  */
-export const AS_BUILT_TRADES = [
-  'ROOFING',
-  'ELECTRICAL',
-  'PLUMBING',
-  'MECHANICAL',
-  'STRUCTURAL',
-  'BUILDING',
-  'WINDOWS_AND_DOORS',
-] as const;
-export type AsBuiltTrade = (typeof AS_BUILT_TRADES)[number];
-
-export const AS_BUILT_TRADE_LABELS: Record<AsBuiltTrade, string> = {
-  ROOFING: 'Roofing',
-  ELECTRICAL: 'Electrical',
-  PLUMBING: 'Plumbing',
-  MECHANICAL: 'Mechanical (HVAC)',
-  STRUCTURAL: 'Structural',
-  BUILDING: 'Building (general)',
-  WINDOWS_AND_DOORS: 'Windows & doors',
-};
+/*
+ * The trade list lives in src/shared/asBuiltTrades.ts, because the drafting
+ * catalogue derives an orderable service from it as well — a contractor asks
+ * for a roofing letter by name rather than describing it in a free-text brief.
+ * One list, so a trade cannot be orderable and unrenderable.
+ *
+ * Re-exported so callers of this module keep working unchanged.
+ */
+export {
+  AS_BUILT_TRADES, AS_BUILT_TRADE_LABELS, isAsBuiltTrade, type AsBuiltTrade,
+} from '../../shared/asBuiltTrades.js';
 
 /**
  * What each trade actually certifies, and what a plans examiner will look for.
@@ -167,10 +159,6 @@ export const AS_BUILT_TRADE_SPEC: Record<AsBuiltTrade, {
     ],
   },
 };
-
-export function isAsBuiltTrade(v: unknown): v is AsBuiltTrade {
-  return typeof v === 'string' && (AS_BUILT_TRADES as readonly string[]).includes(v);
-}
 
 export interface AsBuiltLetterInput {
   trade: AsBuiltTrade;

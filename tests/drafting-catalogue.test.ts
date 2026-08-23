@@ -17,7 +17,9 @@
  * system would mention it.
  */
 import { describe, it, expect } from 'vitest';
+import { AS_BUILT_TRADES } from '../src/shared/asBuiltTrades.js';
 import {
+  DRAFTING_CATALOGUE,
   DRAFTING_SERVICES,
   DRAFTING_LABELS,
   DRAFTING_GROUPS,
@@ -29,6 +31,57 @@ import { dbConfigured, applyMigrations, client, ownerUrl } from './helpers/db.js
 const describeIfDb = dbConfigured ? describe : describe.skip;
 
 describe('the drafting catalogue', () => {
+  it('offers both as-built deliverables, for every trade', () => {
+    /*
+     * The plan set and the letter are different things and a department asking
+     * for one will not take the other, so both are orderable — and per trade,
+     * because that is how they are asked for. Derived from the shared trade
+     * list, so the catalogue cannot offer a letter the document generator has
+     * no template for.
+     */
+    for (const trade of AS_BUILT_TRADES) {
+      expect(DRAFTING_SERVICES, `no as-built letter for ${trade}`)
+        .toContain(`AS_BUILT_LETTER_${trade}`);
+      expect(DRAFTING_SERVICES, `no as-built plans for ${trade}`)
+        .toContain(`AS_BUILT_PLANS_${trade}`);
+    }
+    expect(DRAFTING_SERVICES).toContain('AS_BUILT');
+  });
+
+  it('offers the statutory Florida inspections by name', () => {
+    /*
+     * Named individually because these three are separate legal requirements
+     * that get confused with each other, and a building can owe more than one:
+     * the milestone inspection is Fla. Stat. 553.899 statewide, the 40-year
+     * recertification is a Miami-Dade and Broward county ordinance, and the
+     * reserve study is Fla. Stat. 718.112(2)(g).
+     */
+    for (const service of [
+      'MILESTONE_INSPECTION_PHASE_1',
+      'MILESTONE_INSPECTION_PHASE_2',
+      'BUILDING_RECERTIFICATION',
+      'STRUCTURAL_INTEGRITY_RESERVE_STUDY',
+      'THRESHOLD_INSPECTION',
+      'WIND_MITIGATION_INSPECTION',
+      'FOUR_POINT_INSPECTION',
+    ]) {
+      expect(DRAFTING_SERVICES, `${service} is missing`).toContain(service);
+    }
+  });
+
+  it('says what a statutory inspection actually is, where the name does not', () => {
+    // A note is the only thing standing between "milestone inspection" and a
+    // contractor ordering the wrong one of three similar-sounding obligations.
+    for (const key of [
+      'MILESTONE_INSPECTION_PHASE_1', 'BUILDING_RECERTIFICATION',
+      'STRUCTURAL_INTEGRITY_RESERVE_STUDY',
+    ]) {
+      const spec = DRAFTING_CATALOGUE.find((s) => s.key === key);
+      expect(spec?.note, `${key} has no explanatory note`).toBeTruthy();
+      expect(spec!.note!.length).toBeGreaterThan(40);
+    }
+  });
+
   it('offers the disciplines a building department reviews separately', () => {
     /*
      * Named individually rather than by counting, because the point is these
