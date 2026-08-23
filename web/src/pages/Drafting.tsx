@@ -3,8 +3,8 @@ import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   DEFAULT_DRAFTING_RATES,
+  DRAFTING_GROUPS,
   DRAFTING_LABELS,
-  DRAFTING_SERVICES,
   can,
   formatCents,
   type DraftingService,
@@ -937,34 +937,75 @@ function RequestDrawer({ onClose }: { onClose: () => void }) {
 
         <fieldset>
           <legend className="label">Services</legend>
-          <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
-            {DRAFTING_SERVICES.map((s) => {
-              const rate = DEFAULT_DRAFTING_RATES.find((r) => r.service === s);
-              const checked = services.includes(s);
+
+          {/*
+            * Grouped by discipline, one disclosure each.
+            *
+            * Thirteen services in a flat grid read as a wall: somebody
+            * ordering electrical had to scan the structural options to be sure
+            * they had not missed one. The grouping is not decoration — it is
+            * how a building department assigns the work, one plans examiner
+            * per discipline, and life safety to the fire marshal entirely.
+            *
+            * A group opens when it holds something already chosen, so
+            * reopening a draft does not hide half the order behind a closed
+            * arrow. Checkboxes, not a select: an order carries several
+            * services and the API takes an array.
+            */}
+          <div className="mt-2 space-y-2">
+            {DRAFTING_GROUPS.map((group) => {
+              const chosen = group.services.filter((s) => services.includes(s)).length;
               return (
-                <label
-                  key={s}
-                  className={`flex items-start gap-2 rounded-md border px-3 py-2 cursor-pointer transition-colors ${
-                    checked ? 'border-brand bg-brand-soft' : 'border-line hover:bg-page'
-                  }`}
+                <details
+                  key={group.key}
+                  open={chosen > 0}
+                  className="rounded-md border border-line bg-white overflow-hidden"
                 >
-                  <input
-                    type="checkbox"
-                    className="mt-0.5 h-4 w-4 rounded border-line text-brand focus:ring-brand/30"
-                    checked={checked}
-                    onChange={(e) =>
-                      setServices((prev) => (e.target.checked ? [...prev, s] : prev.filter((x) => x !== s)))
-                    }
-                  />
-                  <span className="min-w-0">
-                    <span className="block text-[13px] font-medium leading-snug">{DRAFTING_LABELS[s]}</span>
-                    <span className="block text-[11px] text-ink-mute leading-snug">
-                      {rate
-                        ? `${rate.quoteRequired ? 'Quoted per job' : `From ${formatCents(rate.baseCents)}`} · typically ${rate.typicalTurnaroundDays} days${rate.requiresSeal ? ' · sealed' : ''}`
-                        : ''}
+                  <summary className="flex items-center justify-between gap-3 px-3 py-2 cursor-pointer select-none hover:bg-page">
+                    <span className="min-w-0">
+                      <span className="block text-[13px] font-medium">{group.label}</span>
+                      {group.hint && (
+                        <span className="block text-[11px] text-ink-mute leading-snug">{group.hint}</span>
+                      )}
                     </span>
-                  </span>
-                </label>
+                    <span className="shrink-0 flex items-center gap-2">
+                      {chosen > 0 && <span className="badge-blue">{chosen}</span>}
+                      <span className="text-ink-mute text-[11px]" aria-hidden="true">▾</span>
+                    </span>
+                  </summary>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 px-3 pb-3 pt-1">
+                    {group.services.map((s) => {
+                      const rate = DEFAULT_DRAFTING_RATES.find((r) => r.service === s);
+                      const checked = services.includes(s);
+                      return (
+                        <label
+                          key={s}
+                          className={`flex items-start gap-2 rounded-md border px-3 py-2 cursor-pointer transition-colors ${
+                            checked ? 'border-brand bg-brand-soft' : 'border-line hover:bg-page'
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            className="mt-0.5 h-4 w-4 rounded border-line text-brand focus:ring-brand/30"
+                            checked={checked}
+                            onChange={(e) =>
+                              setServices((prev) => (e.target.checked ? [...prev, s] : prev.filter((x) => x !== s)))
+                            }
+                          />
+                          <span className="min-w-0">
+                            <span className="block text-[13px] font-medium leading-snug">{DRAFTING_LABELS[s]}</span>
+                            <span className="block text-[11px] text-ink-mute leading-snug">
+                              {rate
+                                ? `${rate.quoteRequired ? 'Quoted per job' : `From ${formatCents(rate.baseCents)}`} · typically ${rate.typicalTurnaroundDays} days${rate.requiresSeal ? ' · sealed' : ''}`
+                                : ''}
+                            </span>
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </details>
               );
             })}
           </div>

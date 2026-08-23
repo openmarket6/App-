@@ -18,7 +18,29 @@ export const DRAFTING_SERVICES = [
   'TRUSS_LAYOUT',
   'ENERGY_CALCS',
   'WIND_LOAD_CALCS',
+  /*
+   * The three MEP disciplines, separately.
+   *
+   * MEP_DESIGN stays, because a single combined package is a real thing to
+   * order and because orders already carry it — removing a value would leave
+   * those rows labelled with a key nothing maps. But a building department
+   * reviews mechanical, electrical and plumbing as separate disciplines, each
+   * with its own reviewer, its own correction cycle and often its own sealing
+   * engineer. A contractor who needs only the electrical cannot ask for it by
+   * buying all three.
+   */
+  'MECHANICAL_PLANS',
+  'ELECTRICAL_PLANS',
+  'PLUMBING_PLANS',
   'MEP_DESIGN',
+  /*
+   * Egress, occupancy, fire ratings and the assemblies that carry them.
+   *
+   * Its own discipline, not a sheet inside the architectural set: on a
+   * commercial job the fire marshal reviews this separately from the building
+   * department, and it is what gets asked for by name.
+   */
+  'LIFE_SAFETY_PLANS',
   'AS_BUILT',
   'REVISION',
 ] as const;
@@ -31,10 +53,65 @@ export const DRAFTING_LABELS: Record<DraftingService, string> = {
   TRUSS_LAYOUT: 'Truss layout & engineering',
   ENERGY_CALCS: 'Energy code calculations',
   WIND_LOAD_CALCS: 'Wind load calculations',
-  MEP_DESIGN: 'MEP design',
+  MECHANICAL_PLANS: 'Mechanical plans (HVAC)',
+  ELECTRICAL_PLANS: 'Electrical plans',
+  PLUMBING_PLANS: 'Plumbing plans',
+  MEP_DESIGN: 'MEP design (combined)',
+  LIFE_SAFETY_PLANS: 'Life safety plans',
   AS_BUILT: 'As-built drawings',
   REVISION: 'Plan revision',
 };
+
+/**
+ * How the disciplines are grouped when somebody is choosing them.
+ *
+ * Defined here rather than in the screen because the grouping is a fact about
+ * the work — a plan reviewer at a building department is assigned by
+ * discipline — and because two screens now render it. Flat, thirteen services
+ * long, it read as a wall of checkboxes; a contractor ordering electrical had
+ * to scan the structural options to be sure they had not missed one.
+ *
+ * Every service appears in exactly one group. A test enforces that, because a
+ * service missing from this map would simply not be orderable and nothing
+ * else would say so.
+ */
+export const DRAFTING_GROUPS: ReadonlyArray<{
+  key: string;
+  label: string;
+  hint: string;
+  services: readonly DraftingService[];
+}> = [
+  {
+    key: 'architectural',
+    label: 'Architectural & site',
+    hint: 'The plan set and what it sits on.',
+    services: ['ARCHITECTURAL_PLANS', 'SITE_PLAN', 'AS_BUILT'],
+  },
+  {
+    key: 'structural',
+    label: 'Structural',
+    hint: 'Anything a Florida PE has to seal for load or uplift.',
+    services: ['STRUCTURAL_ENGINEERING', 'TRUSS_LAYOUT', 'WIND_LOAD_CALCS'],
+  },
+  {
+    key: 'mep',
+    label: 'Mechanical, electrical & plumbing',
+    hint: 'Reviewed as separate disciplines. Order them separately, or take the combined package.',
+    services: ['MECHANICAL_PLANS', 'ELECTRICAL_PLANS', 'PLUMBING_PLANS', 'MEP_DESIGN'],
+  },
+  {
+    key: 'life_safety',
+    label: 'Life safety',
+    hint: 'Egress, occupancy and fire ratings — reviewed by the fire marshal, not the building department.',
+    services: ['LIFE_SAFETY_PLANS'],
+  },
+  {
+    key: 'other',
+    label: 'Calculations & revisions',
+    hint: '',
+    services: ['ENERGY_CALCS', 'REVISION'],
+  },
+];
 
 /** Which requirement keys a delivered service is expected to satisfy. */
 export const DRAFTING_SATISFIES: Record<DraftingService, string[]> = {
@@ -44,7 +121,17 @@ export const DRAFTING_SATISFIES: Record<DraftingService, string[]> = {
   TRUSS_LAYOUT: ['truss_engineering'],
   ENERGY_CALCS: ['energy_calc'],
   WIND_LOAD_CALCS: ['wind_calc', 'hvhz_wind_calc', 'roof_uplift'],
+  /*
+   * Empty where no requirement key exists for that discipline yet, rather than
+   * pointed at an approximate one. A delivered plan set that claims to satisfy
+   * a requirement it does not is worse than one that claims nothing: the first
+   * clears a checklist item nobody then looks at again.
+   */
+  MECHANICAL_PLANS: [],
+  ELECTRICAL_PLANS: ['electrical_one_line', 'electrical_bonding'],
+  PLUMBING_PLANS: [],
   MEP_DESIGN: ['electrical_one_line'],
+  LIFE_SAFETY_PLANS: ['fire_review'],
   AS_BUILT: [],
   REVISION: [],
 };
@@ -115,7 +202,11 @@ export const DEFAULT_DRAFTING_RATES: DraftingRate[] = [
   { service: 'TRUSS_LAYOUT', baseCents: 900_00, quoteRequired: true, typicalTurnaroundDays: 7, requiresSeal: true, active: true },
   { service: 'ENERGY_CALCS', baseCents: 350_00, quoteRequired: false, typicalTurnaroundDays: 3, requiresSeal: false, active: true },
   { service: 'WIND_LOAD_CALCS', baseCents: 650_00, quoteRequired: false, typicalTurnaroundDays: 4, requiresSeal: true, active: true },
+  { service: 'MECHANICAL_PLANS', baseCents: 850_00, quoteRequired: true, typicalTurnaroundDays: 7, requiresSeal: true, active: true },
+  { service: 'ELECTRICAL_PLANS', baseCents: 850_00, quoteRequired: true, typicalTurnaroundDays: 7, requiresSeal: true, active: true },
+  { service: 'PLUMBING_PLANS', baseCents: 750_00, quoteRequired: true, typicalTurnaroundDays: 7, requiresSeal: true, active: true },
   { service: 'MEP_DESIGN', baseCents: 1_200_00, quoteRequired: true, typicalTurnaroundDays: 9, requiresSeal: true, active: true },
+  { service: 'LIFE_SAFETY_PLANS', baseCents: 950_00, quoteRequired: true, typicalTurnaroundDays: 8, requiresSeal: true, active: true },
   { service: 'AS_BUILT', baseCents: 750_00, quoteRequired: true, typicalTurnaroundDays: 6, requiresSeal: false, active: true },
   { service: 'REVISION', baseCents: 300_00, quoteRequired: false, typicalTurnaroundDays: 3, requiresSeal: false, active: true },
 ];
