@@ -177,6 +177,18 @@ export async function failJob(
   job: JobRow,
   error: Error,
   opts: { permanent?: boolean } = {},
+  /**
+   * The worker recording the failure.
+   *
+   * Symmetric with `completeJob`. `runWithTimeout` abandons a timed-out
+   * handler rather than cancelling it, so one stuck on a socket keeps running
+   * after its timeout fires; the reaper releases the job, another worker takes
+   * it, and the original invocation eventually throws. Without this guard that
+   * late failure clears `locked_by` and rewrites the status of a job somebody
+   * else is midway through -- and computes exhaustion from its own stale
+   * `attempts`, so it can declare a live job dead.
+   */
+  ownedBy?: string,
 ): Promise<'retrying' | 'dead'> {
   const exhausted = opts.permanent === true || job.attempts >= job.max_attempts;
   const delaySeconds = retryDelaySeconds(job.attempts);
@@ -184,18 +196,50 @@ export async function failJob(
   await withServiceContext(
     async (tx) => {
       await tx.query(
+        /*
+         * `$2::ocs.job_status` and the separate `$3` text copy are not
+         * stylistic.
+         *
+         * `status` is an enum column. Sending the new status as one untyped
+         * parameter used in both `set status = $2` and `case when $2 =
+         * 'failed'` made Postgres deduce ocs.job_status from the assignment
+         * and text from the comparison, and refuse the whole statement with
+         *
+         *     42P08  inconsistent types deduced for parameter $2
+         *            detail: text versus ocs.job_status
+         *
+         * every single time. This statement had therefore NEVER succeeded:
+         * no job in this system has ever been retried or dead-lettered. A
+         * handler that threw left its row 'running' forever, holding a
+         * concurrency slot, and `reapStuckJobs` -- which had the same defect
+         * in its own CASE -- could not clean it up either. Four failures of
+         * any kind and background processing stops permanently and silently.
+         *
+         * Found 23 Aug 2026 with 23 such rows in production, the oldest 20
+         * hours old. No test had ever exercised a failing job; there are now
+         * eight, in tests/job-failure.test.ts.
+         */
         `update ocs.jobs
-            set status      = $2,
-                last_error  = $3,
+            set status      = $2::ocs.job_status,
+                last_error  = $4,
                 error_count = error_count + 1,
                 locked_at   = null,
                 locked_by   = null,
-                run_at      = case when $2 = 'failed'
-                                   then now() + make_interval(secs => $4)
+                run_at      = case when $3 = 'failed'
+                                   then now() + make_interval(secs => $5)
                                    else run_at end,
-                finished_at = case when $2 = 'dead' then now() else null end
-          where id = $1`,
-        [job.id, exhausted ? 'dead' : 'failed', error.message.slice(0, 2000), delaySeconds],
+                finished_at = case when $3 = 'dead' then now() else null end
+          where id = $1
+            and status = 'running'
+            and ($6::text is null or locked_by = $6)`,
+        [
+          job.id,
+          exhausted ? 'dead' : 'failed',
+          exhausted ? 'dead' : 'failed',
+          error.message.slice(0, 2000),
+          delaySeconds,
+          ownedBy ?? null,
+        ],
       );
     },
     { reason: 'fail_job' },
@@ -230,7 +274,11 @@ export async function reapStuckJobs(): Promise<number> {
     async (tx) => {
       const rows = await tx.many<{ id: string; job_type: string }>(
         `update ocs.jobs
-            set status = case when attempts >= max_attempts then 'dead' else 'failed' end,
+            -- Cast required: a CASE over two string literals resolves to
+            -- text, and text does not assign to an enum column. Without it
+            -- this statement raised 42804 on every run and the reaper had
+            -- never once cleared a stuck job.
+            set status = (case when attempts >= max_attempts then 'dead' else 'failed' end)::ocs.job_status,
                 last_error = 'worker timed out or died before completing',
                 error_count = error_count + 1,
                 locked_at = null,
