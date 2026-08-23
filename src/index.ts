@@ -61,9 +61,19 @@ import { publicSiteRoutes } from './routes/public-site.js';
 export async function buildServer() {
   const app = Fastify({
     loggerInstance: logger,
-    // Trust the platform proxy so req.ip is the real client, not the load
-    // balancer. Rate limiting and audit records depend on this being right.
-    trustProxy: true,
+    /*
+     * A hop count, never `true`. See TRUSTED_PROXY_HOPS in config/env.ts:
+     * trusting the whole chain makes req.ip the value the CALLER wrote, which
+     * silently disarmed every rate limit and forged every audit address.
+     */
+    /*
+     * The function form of a hop count. Fastify calls this with each address
+     * in X-Forwarded-For working RIGHT to left, `hop` being the distance from
+     * the socket peer; returning true means "that one is a proxy of ours, keep
+     * going". So this trusts exactly TRUSTED_PROXY_HOPS addresses and stops,
+     * and anything the caller prepended beyond that is ignored.
+     */
+    trustProxy: (_address: string, hop: number) => hop < env.TRUSTED_PROXY_HOPS,
     genReqId: (req) => (req.headers['x-request-id'] as string) ?? randomUUID(),
     // Reject oversized JSON early. Files never come through here -- they go
     // direct to storage -- so a large body is a mistake or an attack.

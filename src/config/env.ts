@@ -122,6 +122,28 @@ const schema = z.object({
   INTEGRATION_ENCRYPTION_KEY: z.string().min(16).optional(),
   RATE_LIMIT_MAX: z.coerce.number().int().positive().default(300),
   RATE_LIMIT_WINDOW: z.string().default('1 minute'),
+  /**
+   * How many proxies sit in front of this process.
+   *
+   * `trustProxy: true` trusts the WHOLE X-Forwarded-For chain, which makes
+   * req.ip the leftmost entry -- and the leftmost entry is whatever the caller
+   * wrote. A fronting proxy appends the real peer to the RIGHT, so a forged
+   * value stays in front of it and wins.
+   *
+   * That turned every IP-keyed rate limit into a no-op, including the ten
+   * attempts per five minutes on sign-in: send a different X-Forwarded-For
+   * with each request and every one lands in a fresh bucket. It also meant
+   * every ip_address written to the audit log, to refresh_tokens and to
+   * mfa_challenges was chosen by whoever made the request, which is the
+   * opposite of what an audit trail is for.
+   *
+   * A COUNT makes Fastify skip that many entries from the right and take the
+   * next one, so a forged prefix is ignored. One for Render's own proxy; two
+   * when traffic arrives through the Netlify redirect as well. Set it wrong
+   * and the effect is a wrong-but-not-forgeable address; set it to `true` and
+   * there is no limit at all.
+   */
+  TRUSTED_PROXY_HOPS: z.coerce.number().int().min(0).max(10).default(1),
 
   // ---------------------------------------------------------------------------
   // Uploads

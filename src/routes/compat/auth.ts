@@ -65,6 +65,9 @@ async function sessionResponse(
     clientId: user.client_id,
     email: user.email,
     mfa,
+    // Stamped so requireApiAuth can refuse a token minted before the account's
+    // sessions were revoked. See AccessClaims.tv.
+    tv: user.token_version,
   };
 
   const refresh = await issueRefreshToken(user, {
@@ -324,8 +327,34 @@ export async function compatAuthRoutes(app: FastifyInstance): Promise<void> {
    * it has been verified below. Enabling on issue would lock someone out of
    * their own account the moment they closed the tab before scanning.
    */
+  /**
+   * Begin enrolling a second factor.
+   *
+   * The current password is required, and that is the whole point of the
+   * endpoint's security. Without it, somebody holding only a stolen password
+   * could enrol a factor of THEIR OWN on an account that had none: sign in
+   * (no challenge, because MFA is off), call setup, load the returned secret
+   * into their authenticator, call enable, and sign in again answering their
+   * own challenge.
+   *
+   * The session that comes back then carries mfa: true, which is the only
+   * thing requireNativeMfa checks — so the guard written to stop an attacker
+   * with a stolen password reaching municipal credentials would have been
+   * satisfied by the attacker's own enrolment. The real account holder is
+   * simultaneously locked out of a second factor they never set up.
+   */
   app.post('/api/auth/mfa/setup', { preHandler: requireApiAuth }, async (req) => {
     const auth = req.apiAuth!;
+    const confirm = parse(
+      z.object({ currentPassword: z.string().min(1) }),
+      req.body,
+      'password confirmation',
+    );
+
+    const me = await findUserById(auth.userId);
+    if (!me || !(await verifyPassword(me.password_hash, confirm.currentPassword))) {
+      throw unauthorized('Your current password is incorrect');
+    }
 
     if (!env.INTEGRATION_ENCRYPTION_KEY) {
       throw serviceUnavailable(
@@ -831,6 +860,20 @@ export async function requireApiAuth(req: FastifyRequest, _reply: FastifyReply):
   const user = await findUserById(claims.userId);
   if (!user || !user.is_active) throw unauthorized('This account is no longer active');
 
+  /*
+   * The panic switch, finally connected.
+   *
+   * token_version is raised by every action that means "end the other
+   * sessions": changing a password, resetting one, disabling MFA, accepting an
+   * invitation, and revokeAllSessions itself. Refresh tokens honoured it;
+   * access tokens never carried it, so nothing here could compare one, and a
+   * stolen token kept working for the rest of its fifteen minutes after the
+   * victim had done the one thing they are told to do.
+   */
+  if (user.token_version !== claims.tv) {
+    throw unauthorized('This session was ended. Sign in again.');
+  }
+
   // Claims are re-read from the database rather than trusted from the token:
   // a role change or a client reassignment takes effect on the next request,
   // not whenever the token expires.
@@ -850,6 +893,12 @@ export async function requireApiAuth(req: FastifyRequest, _reply: FastifyReply):
      * after, which is the opposite of what enrolling is for.
      */
     mfa: claims.mfa === true,
+    /*
+     * Carried through so the shape matches AccessClaims. The value that was
+     * CHECKED is the one on the token, a few lines above; this is the current
+     * one, and they are equal by the time execution reaches here.
+     */
+    tv: user.token_version,
   };
 }
 

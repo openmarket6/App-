@@ -50,6 +50,21 @@ export interface AccessClaims {
   clientId: string | null;
   email: string;
   /**
+   * The user's token_version at the moment this token was minted.
+   *
+   * The whole point of that column -- "raising it invalidates every session" --
+   * was enforced on the REFRESH path only. An access token carried no version,
+   * so nothing could compare one, and every action that raises it (changing a
+   * password, resetting one, disabling MFA, accepting an invitation, the
+   * revoke-everything panic switch) left the outstanding access token working
+   * for the rest of its fifteen minutes.
+   *
+   * Fifteen minutes is long enough for a stolen ADMIN token to invite a second
+   * ADMIN, which turns a window into permanent access. The doc at the top of
+   * this file already claimed this was enforced.
+   */
+  tv: number;
+  /**
    * Whether a second factor was actually presented for THIS session.
    *
    * On the token rather than looked up per request, because the question is
@@ -160,6 +175,15 @@ export async function verifyAccessToken(token: string): Promise<AccessClaims> {
     if (typeof payload['userId'] !== 'string' || typeof payload['role'] !== 'string') {
       throw new Error('malformed claims');
     }
+    /*
+     * A token with no version predates this check and cannot be compared
+     * against anything, so it is refused. That signs everybody out once, on
+     * the deploy that introduces it -- which is the correct trade for a
+     * revocation mechanism that was not working.
+     */
+    if (typeof payload['tv'] !== 'number') {
+      throw new Error('token predates session revocation checking');
+    }
     return {
       userId: payload['userId'] as string,
       role: payload['role'] as Role,
@@ -174,6 +198,7 @@ export async function verifyAccessToken(token: string): Promise<AccessClaims> {
        * completed the second step.
        */
       mfa: payload['mfa'] === true,
+      tv: payload['tv'] as number,
     };
   } catch {
     throw unauthorized('Invalid or expired session');

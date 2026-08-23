@@ -1790,6 +1790,31 @@ export async function compatSupervisionRoutes(app: FastifyInstance): Promise<voi
     { preHandler: [requireApiAuth, requireCapability('supervision:read'), refuseReadOnly] },
     async (req) => {
       const auth = req.apiAuth!;
+
+      /*
+       * A supervisor cannot commit the firm, and is told so before anything is
+       * looked up.
+       *
+       * The tenant check further down scopes a CLIENT to their own company;
+       * every other holder of supervision:read passed with no company scoping
+       * at all — including SITE_SUPERVISOR, the role whose own description
+       * says it "travels to job sites on a phone, which is the account most
+       * likely to be left unlocked in a truck". Accepting these terms is the
+       * moment this firm's licence becomes answerable for a job.
+       *
+       * Checked FIRST because it is a fact about the caller, not about the
+       * row. Ordering it after the lookup answered 404 for an engagement that
+       * does not exist and 403 for one that does, which hands an unauthorised
+       * caller a way to enumerate them.
+       */
+      if (auth.role !== 'CLIENT' && auth.role !== 'ADMIN' && auth.role !== 'PERMIT_TECH') {
+        throw forbidden(
+          'Accepting supervision terms commits this firm to qualifying the ' +
+          'work. A coordinator or an administrator records it — or the ' +
+          'contractor accepts it themselves in the portal.',
+        );
+      }
+
       const { id } = parse(z.object({ id: z.string().uuid() }), req.params, 'parameters');
       const body = parse(
         z.object({
@@ -1819,6 +1844,7 @@ export async function compatSupervisionRoutes(app: FastifyInstance): Promise<voi
           if (auth.role === 'CLIENT' && auth.clientId !== existing.company_id) {
             throw forbidden('That engagement belongs to a different contractor');
           }
+
           if (existing.terms_accepted_at) {
             throw conflict('Those terms were already accepted.');
           }

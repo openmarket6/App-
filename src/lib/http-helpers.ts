@@ -68,13 +68,19 @@ export function parse<S extends ZodTypeAny>(
   return result.data;
 }
 
-/** Client IP, honouring the proxy header Render sets. */
+/**
+ * The client's address, as far as it can be known.
+ *
+ * `req.ip`, and deliberately nothing else. This used to read X-Forwarded-For
+ * itself and take the FIRST entry -- which is the one the caller wrote, since
+ * a proxy appends the real peer to the right. Every ip_address in the audit
+ * log, in refresh_tokens and in mfa_challenges was therefore whatever the
+ * request asked for.
+ *
+ * Fastify already computes this correctly from TRUSTED_PROXY_HOPS. Doing it
+ * again here, with no trust logic, threw that away.
+ */
 export function clientIp(req: FastifyRequest): string | null {
-  const forwarded = req.headers['x-forwarded-for'];
-  if (typeof forwarded === 'string') {
-    const first = forwarded.split(',')[0]?.trim();
-    if (first) return first;
-  }
   return req.ip || null;
 }
 

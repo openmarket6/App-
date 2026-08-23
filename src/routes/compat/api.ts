@@ -86,7 +86,16 @@ export async function scoped<T>(
   );
 }
 
-const clientFilter = (companyId: string | null) => (companyId ? ` and company_id = '${companyId}'` : '');
+/*
+ * Deliberately removed: a helper that built ` and company_id = '<id>'` by
+ * string interpolation.
+ *
+ * It was never called, which is the only reason this was not an injection.
+ * Every query in this file parameterises, and a ready-made fragment that does
+ * not — sitting in the same file, with an inviting name — is one autocomplete
+ * away from being used. The scoping it duplicated is already done properly by
+ * scoped() above.
+ */
 
 /**
  * Areas that still answer 501.

@@ -15,7 +15,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { withTenant, withServiceContext, type Tx } from '../../db/tenant.js';
-import { requireApiAuth, requireCapability } from './auth.js';
+import { requireApiAuth, requireCapability, refuseReadOnly } from './auth.js';
 import { resolveClientId } from './client-scope.js';
 import { parse, clientIp, userAgent } from '../../lib/http-helpers.js';
 import { writeAudit } from '../../lib/audit.js';
@@ -158,7 +158,7 @@ export async function compatSupportRoutes(app: FastifyInstance): Promise<void> {
   /** Open a ticket. */
   app.post(
     '/api/support',
-    { preHandler: [requireApiAuth, requireCapability('permit:read')] },
+    { preHandler: [requireApiAuth, requireCapability('permit:read'), refuseReadOnly] },
     async (req, reply) => {
       const auth = req.apiAuth!;
       const body = parse(
@@ -258,7 +258,7 @@ export async function compatSupportRoutes(app: FastifyInstance): Promise<void> {
    */
   app.post(
     '/api/support/:id/messages',
-    { preHandler: [requireApiAuth, requireCapability('permit:read')] },
+    { preHandler: [requireApiAuth, requireCapability('permit:read'), refuseReadOnly] },
     async (req, reply) => {
       const auth = req.apiAuth!;
       const { id } = parse(z.object({ id: z.string().uuid() }), req.params, 'parameters');
