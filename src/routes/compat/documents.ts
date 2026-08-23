@@ -56,6 +56,27 @@ const TO_STORED: Record<string, string> = {
 /** 20 MB. Above this the browser should be using a signed upload URL instead. */
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 
+/**
+ * The body limit for an endpoint that carries a photograph.
+ *
+ * The server-wide limit is 1 MB, set with the comment "files never come
+ * through here -- they go direct to storage". That is true of documents and
+ * false of photographs: this endpoint takes the image inline as base64, and
+ * base64 is four bytes for every three, so a 1 MB body caps a photo at about
+ * 750 KB. A photo from any phone made in the last decade is 2-5 MB.
+ *
+ * So every photograph taken on a job site was refused with "Request body is
+ * too large" before the handler ran -- including the handler's own, much
+ * friendlier size check, which was unreachable. Supervision photographs are
+ * the evidence that makes a managed licence defensible, and none of them could
+ * be uploaded.
+ *
+ * Derived from MAX_UPLOAD_BYTES rather than written twice, so raising one
+ * cannot silently fail to raise the other.
+ */
+const PHOTO_BODY_LIMIT = Math.ceil(MAX_UPLOAD_BYTES * 4 / 3) + 64 * 1024;
+
+
 async function scoped<T>(
   req: FastifyRequest,
   fn: (tx: Tx, companyId: string | null) => Promise<T>,
@@ -206,7 +227,10 @@ export async function compatDocumentsRoutes(app: FastifyInstance): Promise<void>
    */
   app.post(
     '/api/documents/photos',
-    { preHandler: [requireApiAuth, requireCapability('document:upload')] },
+    {
+      bodyLimit: PHOTO_BODY_LIMIT,
+      preHandler: [requireApiAuth, requireCapability('document:upload')],
+    },
     async (req, reply) => {
       const auth = req.apiAuth!;
       const body = parse(
@@ -362,7 +386,13 @@ export async function compatDocumentsRoutes(app: FastifyInstance): Promise<void>
    */
   app.post(
     '/api/documents',
-    { preHandler: [requireApiAuth, requireCapability('document:upload')] },
+    {
+      // Same reason as the photo route: this takes the file inline as base64,
+      // and a plan set is measured in megabytes. Under the 1 MB server limit
+      // every real submittal was refused before the handler saw it.
+      bodyLimit: PHOTO_BODY_LIMIT,
+      preHandler: [requireApiAuth, requireCapability('document:upload')],
+    },
     async (req, reply) => {
       const auth = req.apiAuth!;
       const body = parse(

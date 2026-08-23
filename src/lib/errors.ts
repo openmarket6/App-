@@ -59,5 +59,26 @@ export const tooManyRequests = (message = 'Too many requests') =>
 export const internalError = (internal?: unknown) =>
   new AppError(500, 'internal_error', 'An unexpected error occurred', { internal, expose: false });
 
+/**
+ * Something this server depends on is not available or not configured.
+ *
+ * EXPOSED, unlike every other 5xx. The default rule -- hide the message at 500
+ * and above -- is right for a crash, where the message is a stack detail
+ * nobody outside should see. It was exactly wrong here.
+ *
+ * Every message passed to this function is hand-written and says which piece of
+ * configuration is missing: "File storage is not configured on this server",
+ * "Payments are not configured", "Two-factor authentication cannot be set up:
+ * there is no encryption key". All of them were being replaced with "An
+ * unexpected error occurred" before they reached anybody.
+ *
+ * That is the same failure this project has already paid for once, when the
+ * worker sat dead for seventeen hours behind green health checks. A
+ * misconfigured bucket on the first morning would have produced a screen full
+ * of "an unexpected error occurred" and an afternoon of guessing.
+ *
+ * The one message not written by hand is a provider's own 5xx text on a failed
+ * letter, which is theirs to give and safe to repeat.
+ */
 export const serviceUnavailable = (message: string, internal?: unknown) =>
-  new AppError(503, 'service_unavailable', message, { internal });
+  new AppError(503, 'service_unavailable', message, { internal, expose: true });

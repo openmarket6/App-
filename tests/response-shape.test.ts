@@ -529,4 +529,51 @@ describeIfDb('what the API puts on the wire', () => {
       await app.close();
     }
   });
+
+  it('sends the permit fee figures four screens do arithmetic on', async () => {
+    /*
+     * Permit.feesDueCents and feesPaidCents are declared non-optional in the
+     * shared type and were emitted by no route at all. TypeScript was satisfied
+     * — the type promised them — so four screens subtracted one undefined from
+     * another and rendered the result.
+     *
+     * formatCents(undefined) is the string "$NaN", and that was the whole Fees
+     * card on the permit detail screen, plus a column on the pipeline and the
+     * contractor record.
+     */
+    const c = client(ownerUrl!);
+    await c.connect();
+    try {
+      await c.query(
+        `update ocs.permits set fee_amount = 412.00, fee_paid_at = null where id = $1`,
+        [PERMIT],
+      );
+    } finally {
+      await c.end();
+    }
+
+    const app = await server();
+    try {
+      const login = await app.inject({ method: 'POST', url: '/api/auth/login', payload: ADMIN });
+      const auth = { authorization: `Bearer ${JSON.parse(login.body).accessToken}` };
+
+      const detail = JSON.parse(
+        (await app.inject({ method: 'GET', url: `/api/permits/${PERMIT}`, headers: auth })).body,
+      );
+      // Integer cents, and a number — these are subtracted from each other.
+      expect(detail.permit.feesDueCents).toBe(41200);
+      expect(typeof detail.permit.feesDueCents).toBe('number');
+      expect(detail.permit.feesPaidCents).toBe(0);
+      expect(Number.isNaN(detail.permit.feesDueCents - detail.permit.feesPaidCents)).toBe(false);
+
+      const list = JSON.parse(
+        (await app.inject({ method: 'GET', url: '/api/permits', headers: auth })).body,
+      );
+      const row = list.permits.find((p: { id: string }) => p.id === PERMIT);
+      expect(row.feesDueCents).toBe(41200);
+      expect(typeof row.feesPaidCents).toBe('number');
+    } finally {
+      await app.close();
+    }
+  });
 });

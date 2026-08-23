@@ -360,6 +360,13 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
                 p.issued_at as "issuedAt", p.expires_at as "expiresAt",
                 p.last_checked_at as "lastCheckedAt", p.created_at as "createdAt",
                 p.updated_at as "updatedAt", p.municipality_id as "jurisdictionId",
+                -- Agency fees, in the integer cents the Permit type declares.
+                -- fee_amount is numeric dollars; the multiplication happens in
+                -- Postgres, where numeric arithmetic is exact, rather than in
+                -- JavaScript where 412.00 * 100 is not reliably 41200.
+                coalesce(round(p.fee_amount * 100), 0)::bigint as "feesDueCents",
+                case when p.fee_paid_at is null then 0
+                     else coalesce(round(p.fee_amount * 100), 0) end::bigint as "feesPaidCents",
                 m.name as "jurisdictionName",
                 pr.name as "projectName",
                 c.name as "clientName",
@@ -419,6 +426,14 @@ export async function compatApiRoutes(app: FastifyInstance): Promise<void> {
             ...r,
             stage,
             trade: toTrade(r.permitType),
+            /*
+             * Numbers, not strings. bigint comes back from node-postgres as a
+             * string, and these two are subtracted from each other on three
+             * screens — "500" - "0" happens to work, but Math.max(0, ...) on a
+             * concatenation would not, and the type says Cents.
+             */
+            feesDueCents: Number(r['feesDueCents'] ?? 0),
+            feesPaidCents: Number(r['feesPaidCents'] ?? 0),
             risk: assessRisk({ stage, updatedAt: r.updatedAt, expiresAt: r.expiresAt }),
             daysInStage: daysInStage(r.updatedAt),
           };

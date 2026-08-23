@@ -1048,6 +1048,32 @@ export async function supervisionRoutes(app: FastifyInstance): Promise<void> {
         throw unprocessable('No uploaded image was found for this photo');
       }
 
+      /*
+       * Check what ARRIVED, not what was promised.
+       *
+       * The bytes go from the browser straight to storage over a signed PUT,
+       * carrying whatever Content-Type the client chose. The type declared at
+       * upload-init was validated; the one on the object never was, and this
+       * handler copied it into the row. So "visit evidence must be an image"
+       * was enforced against a claim rather than a file, and an HTML document
+       * could be stored as supervision evidence and later served inline.
+       *
+       * The size has the same shape: the declared byteSize was capped and the
+       * real object was not.
+       */
+      assertAllowedContentType(info.contentType);
+      if (!info.contentType.startsWith('image/')) {
+        throw unprocessable(
+          `That upload is ${info.contentType}, not an image. Visit evidence is ` +
+          'photographs; a document belongs on the permit instead.',
+        );
+      }
+      if (info.size > env.MAX_UPLOAD_BYTES) {
+        throw unprocessable(
+          `That photograph is ${info.size} bytes, past the ${env.MAX_UPLOAD_BYTES} byte limit.`,
+        );
+      }
+
       return withTenant(ctx, async (tx) => {
         await tx.query(
           `update ocs.document_versions

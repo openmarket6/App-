@@ -310,17 +310,58 @@ function MoneyCell({
       {disabled ? (
         <span className="tabular-nums">{formatCents(value)}</span>
       ) : (
-        <input
-          className="input py-1 text-right tabular-nums w-28 ml-auto"
-          inputMode="decimal"
-          value={(value / 100).toFixed(2)}
-          onChange={(e) => {
-            const n = Number(e.target.value.replace(/[^0-9.]/g, ''));
-            onChange(Number.isFinite(n) ? Math.round(n * 100) : 0);
-          }}
-        />
+        <MoneyInput value={value} onChange={onChange} />
       )}
     </td>
+  );
+}
+
+/**
+ * A price, typed by a person.
+ *
+ * The previous version was a controlled input whose value was always
+ * `(cents / 100).toFixed(2)`, which rewrote the box on every keystroke.
+ * Changing $450.00 to $500.00 went: type "5", the box becomes "5.00" with the
+ * caret at the end, type "0" and it reads "5.000" — Number("5.000") is 5 — so
+ * the saved rate was 500 cents. Five dollars, not five hundred, written to
+ * ocs.trade_rates with no warning.
+ *
+ * So the text belongs to whoever is typing until they leave the field. The
+ * cents are parsed on every keystroke so a save mid-edit is still right, and
+ * the display is normalised on blur, when the number is finished.
+ */
+function MoneyInput({
+  value,
+  onChange,
+}: {
+  value: number;
+  onChange: (cents: number) => void;
+}) {
+  const [text, setText] = useState<string | null>(null);
+  const shown = text ?? (value / 100).toFixed(2);
+
+  const parse = (raw: string): number | null => {
+    const cleaned = raw.replace(/[^0-9.]/g, '');
+    if (cleaned === '' || cleaned === '.') return null;
+    const n = Number(cleaned);
+    // Math.round on a value with at most two decimals is exact; the guard is
+    // for "1.2.3", which Number gives back as NaN.
+    return Number.isFinite(n) ? Math.round(n * 100) : null;
+  };
+
+  return (
+    <input
+      className="input py-1 text-right tabular-nums w-28 ml-auto"
+      inputMode="decimal"
+      value={shown}
+      onChange={(e) => {
+        setText(e.target.value);
+        const cents = parse(e.target.value);
+        if (cents !== null) onChange(cents);
+      }}
+      onFocus={(e) => e.currentTarget.select()}
+      onBlur={() => setText(null)}
+    />
   );
 }
 

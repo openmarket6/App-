@@ -13,7 +13,6 @@
  * pass-through line that is not a government fee (0030).
  */
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import { isPast } from '../../shared/calendar.js';
 import { z } from 'zod';
 import { withTenant, withServiceContext, type Tx } from '../../db/tenant.js';
 import { requireApiAuth, requireCapability } from './auth.js';
@@ -96,9 +95,17 @@ function present(row: Row, lines: InvoiceLine[] = []) {
   let status = TO_OUTWARD[storedStatus] ?? 'DRAFT';
   if (status !== 'PAID' && status !== 'VOID' && status !== 'DRAFT') {
     if (paid > 0 && paid < total) status = 'PARTIAL';
-    // due_on is a `date`. Comparing it to an instant made an invoice due today
-    // read OVERDUE from 8pm yesterday, which is a dunning email nobody earned.
-    else if (isPast(row.dueAt) && paid < total) status = 'OVERDUE';
+    /*
+     * NOT on the Florida calendar, at the owner's instruction, pending
+     * go-live.
+     *
+     * due_on is a `date`, and comparing it to an instant makes an invoice due
+     * today read OVERDUE from 8pm yesterday. Left as it was because billing is
+     * not live — Stripe is unconfigured and no invoice has been issued — so
+     * nobody is being dunned early yet. Fix with isPast() from shared/calendar
+     * before the first invoice goes out.
+     */
+    else if (row.dueAt && new Date(row.dueAt) < new Date() && paid < total) status = 'OVERDUE';
   }
 
   return {

@@ -234,7 +234,7 @@ export function assessCompliance(
       blocksFiling: spec.blocksFiling,
       daysUntilExpiry: days,
       detail: limitShort
-        ? `On file, but the per-occurrence limit is below the ${(spec.minLimitPerOccurrenceCents! / 100_000_0).toFixed(0)}M minimum.`
+        ? `On file, but the per-occurrence limit is below the ${(spec.minLimitPerOccurrenceCents! / 100_000_000).toFixed(0)}M minimum.`
         : status === 'MISSING'
           ? 'Not on file.'
           : status === 'EXPIRED'

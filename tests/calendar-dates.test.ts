@@ -201,3 +201,20 @@ describe('rendering a date on a screen', () => {
     expect(fmtDate('2026-06-01T15:30:00Z')).toContain('2026');
   });
 });
+
+describe('money figures shown to a contractor', () => {
+  it('does not describe a $1M insurance minimum as 100M', async () => {
+    /*
+     * The divisor was 100_000_0 — one million — where cents-to-millions needs
+     * one hundred million. A contractor short on coverage was told the
+     * requirement was 100M.
+     */
+    const { COMPLIANCE_POLICY_MESSAGE_DIVISOR_CHECK } = { COMPLIANCE_POLICY_MESSAGE_DIVISOR_CHECK: 100_000_000 };
+    expect((1_000_000_00 / COMPLIANCE_POLICY_MESSAGE_DIVISOR_CHECK).toFixed(0)).toBe('1');
+
+    const src = await import('node:fs/promises')
+      .then((fs) => fs.readFile(new URL('../src/shared/compliance.ts', import.meta.url), 'utf8'));
+    expect(src, 'the one-million divisor is back').not.toContain('100_000_0)');
+    expect(src).toContain('100_000_000');
+  });
+});

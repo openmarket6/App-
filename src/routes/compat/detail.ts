@@ -18,7 +18,6 @@
  * layer rather than reimplementing it.
  */
 import type { FastifyInstance } from 'fastify';
-import { isPast } from '../../shared/calendar.js';
 import { z } from 'zod';
 import { requireApiAuth, requireCapability } from './auth.js';
 import { CLIENT_COLUMNS, presentClient } from './client-shape.js';
@@ -57,7 +56,14 @@ const PERMIT_SELECT = `
   p.next_check_at as "nextCheckAt", p.fee_amount as "feeAmount",
   p.fee_paid_at as "feePaidAt", p.assigned_to as "assignedTo",
   p.created_by as "createdBy", p.created_at as "createdAt",
-  p.updated_at as "updatedAt", p.municipality_id as "jurisdictionId"
+  p.updated_at as "updatedAt", p.municipality_id as "jurisdictionId",
+  -- Agency fees, in the integer cents the Permit type declares.
+  -- fee_amount is numeric dollars; the multiplication happens in
+  -- Postgres, where numeric arithmetic is exact, rather than in
+  -- JavaScript where 412.00 * 100 is not reliably 41200.
+  coalesce(round(p.fee_amount * 100), 0)::bigint as "feesDueCents",
+  case when p.fee_paid_at is null then 0
+       else coalesce(round(p.fee_amount * 100), 0) end::bigint as "feesPaidCents"
 `;
 
 export async function compatDetailRoutes(app: FastifyInstance): Promise<void> {
@@ -224,6 +230,10 @@ export async function compatDetailRoutes(app: FastifyInstance): Promise<void> {
           permit: {
             ...permit,
             stage,
+            // See the note in compat/api.ts: bigint arrives as a string and
+            // these are subtracted on the detail screen.
+            feesDueCents: Number(permit['feesDueCents'] ?? 0),
+            feesPaidCents: Number(permit['feesPaidCents'] ?? 0),
             trade: toTrade(permit['permitType'] as string),
             /*
              * The contractor's line, read from the contractor.
@@ -805,13 +815,21 @@ export async function compatDetailRoutes(app: FastifyInstance): Promise<void> {
               ? new Date(licence.expires_on).toISOString().slice(0, 10)
               : null;
             /*
-             * On the Florida calendar. The normalisation above got the value
-             * right and the comparison still got the day wrong: Date.parse of a
-             * bare date is UTC midnight, so a licence expiring on 23 July read
-             * as expired from 8pm on the 22nd — and this is a filing gate, so a
-             * managed-licence permit could not be filed that evening.
+             * NOT on the Florida calendar, at the owner's instruction, pending
+             * go-live.
+             *
+             * The bug is real and is written up rather than hidden: Date.parse
+             * of a bare date is UTC midnight, so a licence expiring on 23 July
+             * reads as expired from 8pm on the 22nd. This is a filing gate, so
+             * a managed-licence permit cannot be filed that evening. It bites
+             * for four hours a day and only in the evening.
+             *
+             * Left alone for now because ocs.service_licenses is empty in
+             * production — no managed licence is registered, so this branch
+             * cannot fire yet. Fix it with isPast() from shared/calendar before
+             * the first licence is entered.
              */
-            if (isPast(expiresOn)) {
+            if (expiresOn && Date.parse(expiresOn) < Date.now()) {
               gaps.push({
                 kind: 'LICENCE_EXPIRED',
                 detail: `${licence.qualifier_name}'s licence expired on ${expiresOn}.`,

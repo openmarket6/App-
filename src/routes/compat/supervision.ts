@@ -39,6 +39,27 @@ import {
 /** 20 MB, matching the general photo upload. */
 const MAX_PHOTO_BYTES = 20 * 1024 * 1024;
 
+/**
+ * The body limit for an endpoint that carries a photograph.
+ *
+ * The server-wide limit is 1 MB, set with the comment "files never come
+ * through here -- they go direct to storage". That is true of documents and
+ * false of photographs: this endpoint takes the image inline as base64, and
+ * base64 is four bytes for every three, so a 1 MB body caps a photo at about
+ * 750 KB. A photo from any phone made in the last decade is 2-5 MB.
+ *
+ * So every photograph taken on a job site was refused with "Request body is
+ * too large" before the handler ran -- including the handler's own, much
+ * friendlier size check, which was unreachable. Supervision photographs are
+ * the evidence that makes a managed licence defensible, and none of them could
+ * be uploaded.
+ *
+ * Derived from MAX_PHOTO_BYTES rather than written twice, so raising one
+ * cannot silently fail to raise the other.
+ */
+const PHOTO_BODY_LIMIT = Math.ceil(MAX_PHOTO_BYTES * 4 / 3) + 64 * 1024;
+
+
 /** Mirrors ocs.visit_photo_type. A type the enum rejects is a 500, not a 400. */
 const VISIT_PHOTO_TYPES = [
   'site_overview', 'work_in_progress', 'completed_work', 'defect',
@@ -897,7 +918,10 @@ export async function compatSupervisionRoutes(app: FastifyInstance): Promise<voi
    */
   app.post(
     '/api/supervision/visits/:id/photos',
-    { preHandler: [requireApiAuth, requireCapability('supervision:log')] },
+    {
+      bodyLimit: PHOTO_BODY_LIMIT,
+      preHandler: [requireApiAuth, requireCapability('supervision:log')],
+    },
     async (req, reply) => {
       const auth = req.apiAuth!;
       const { id } = parse(z.object({ id: z.string().uuid() }), req.params, 'parameters');

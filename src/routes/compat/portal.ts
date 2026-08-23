@@ -82,6 +82,16 @@ const toPortalCategory = (stored: string): DocumentCategory =>
 /** 20 MB, matching the documents API. Larger files need a signed upload URL. */
 const MAX_PORTAL_UPLOAD_BYTES = 20 * 1024 * 1024;
 
+/**
+ * Derived, for the same reason as the photo routes.
+ *
+ * This route inherited the 1 MB server-wide limit while advertising 20 MB, so
+ * every base64 upload from the contractor portal above roughly 750 KB was
+ * refused by Fastify with "Request body is too large" before the handler ran.
+ * That is any photograph and most plan sets.
+ */
+const PORTAL_BODY_LIMIT = Math.ceil(MAX_PORTAL_UPLOAD_BYTES * 4 / 3) + 64 * 1024;
+
 /** Portal categories to the stored enum, as compat/documents does it. */
 const TO_STORED_CATEGORY: Record<string, string> = {
   SUBMITTAL: 'permit_application',
@@ -284,7 +294,10 @@ export async function compatPortalRoutes(app: FastifyInstance): Promise<void> {
    */
   app.post(
     '/api/portal/folders/*',
-    { preHandler: [requireApiAuth, requireCapability('portal:upload_own')] },
+    {
+      bodyLimit: PORTAL_BODY_LIMIT,
+      preHandler: [requireApiAuth, requireCapability('portal:upload_own')],
+    },
     async (req, reply) => {
       const auth = req.apiAuth!;
       const raw = (req.params as Record<string, string>)['*'] ?? '';

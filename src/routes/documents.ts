@@ -283,6 +283,17 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
         );
       }
 
+      /*
+       * The size of what arrived was checked here and the TYPE was not.
+       *
+       * The bytes travel browser-to-storage over a signed PUT carrying whatever
+       * Content-Type the client picks, so the type validated at upload-init is
+       * a claim about a file that had not been sent yet. This handler then
+       * copied the real one into the row unexamined — which is how text/html
+       * ends up in a bucket that deliberately excludes it.
+       */
+      assertAllowedContentType(info.contentType);
+
       return withTenant(ctx, async (tx) => {
         await tx.query(
           `update ocs.document_versions
