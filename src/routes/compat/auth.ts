@@ -879,6 +879,28 @@ export async function requireNativeMfa(req: FastifyRequest, _reply: FastifyReply
 }
 
 /** Refuses a caller whose role lacks any of the required capabilities. */
+/**
+ * Refuse the roles that are supposed to be reading, not doing.
+ *
+ * Several write endpoints are guarded by a `:read` capability, because the
+ * contractor portal needs them and CLIENT holds the read. The side effect was
+ * that VIEWER held it too -- a role whose own description is "Read-only across
+ * the firm. Cannot file, edit or download credentials" -- so a read-only
+ * account could create compliance records, approve a drafting quote, and
+ * accept supervision engagement terms. The last two are a financial
+ * commitment and a legal one.
+ *
+ * requireCapability is an AND across everything passed to it, so it cannot say
+ * "staff or contractor". This says the thing that is actually meant: whoever
+ * else may do this, an account that only watches may not.
+ */
+export async function refuseReadOnly(req: FastifyRequest, _reply: FastifyReply): Promise<void> {
+  if (!req.apiAuth) throw unauthorized();
+  if (req.apiAuth.role === 'VIEWER' || req.apiAuth.role === 'PENDING') {
+    throw forbidden('Your role is read-only and cannot make this change');
+  }
+}
+
 export function requireCapability(...required: string[]) {
   return async (req: FastifyRequest, _reply: FastifyReply): Promise<void> => {
     if (!req.apiAuth) throw unauthorized();

@@ -22,7 +22,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { withTenant, withServiceContext, type Tx } from '../../db/tenant.js';
-import { requireApiAuth, requireCapability } from './auth.js';
+import { requireApiAuth, requireCapability, refuseReadOnly } from './auth.js';
 import { parse, clientIp, userAgent } from '../../lib/http-helpers.js';
 import { writeAudit } from '../../lib/audit.js';
 import { notFound, badRequest, forbidden, conflict } from '../../lib/errors.js';
@@ -264,7 +264,7 @@ export async function compatDraftingRoutes(app: FastifyInstance): Promise<void> 
   /** Request drafting work. */
   app.post(
     '/api/drafting',
-    { preHandler: [requireApiAuth, requireCapability('drafting:read')] },
+    { preHandler: [requireApiAuth, requireCapability('drafting:read'), refuseReadOnly] },
     async (req, reply) => {
       const auth = req.apiAuth!;
       const body = parse(
@@ -512,7 +512,7 @@ export async function compatDraftingRoutes(app: FastifyInstance): Promise<void> 
    */
   app.post(
     '/api/drafting/:id/approve',
-    { preHandler: [requireApiAuth, requireCapability('drafting:read')] },
+    { preHandler: [requireApiAuth, requireCapability('drafting:read'), refuseReadOnly] },
     async (req) => {
       const auth = req.apiAuth!;
       const { id } = parse(z.object({ id: z.string().uuid() }), req.params, 'parameters');
