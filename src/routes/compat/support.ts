@@ -16,6 +16,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { withTenant, withServiceContext, type Tx } from '../../db/tenant.js';
 import { requireApiAuth, requireCapability } from './auth.js';
+import { resolveClientId } from './client-scope.js';
 import { parse, clientIp, userAgent } from '../../lib/http-helpers.js';
 import { writeAudit } from '../../lib/audit.js';
 import { notFound, badRequest, forbidden } from '../../lib/errors.js';
@@ -172,7 +173,7 @@ export async function compatSupportRoutes(app: FastifyInstance): Promise<void> {
         'ticket',
       );
 
-      const companyId = auth.role === 'CLIENT' ? auth.clientId : (body.clientId ?? null);
+      const companyId = resolveClientId(req, body.clientId);
       if (!companyId) throw badRequest('A ticket must belong to a contractor');
 
       const result = await scoped(

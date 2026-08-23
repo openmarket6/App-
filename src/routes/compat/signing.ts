@@ -27,6 +27,7 @@ import { z } from 'zod';
 import { createHash } from 'node:crypto';
 import { withTenant, withServiceContext, type Tx } from '../../db/tenant.js';
 import { requireApiAuth, requireCapability } from './auth.js';
+import { resolveClientId } from './client-scope.js';
 import { parse, clientIp, userAgent } from '../../lib/http-helpers.js';
 import { writeAudit } from '../../lib/audit.js';
 import { notFound, badRequest, forbidden, conflict } from '../../lib/errors.js';
@@ -67,25 +68,6 @@ async function scoped<T>(
     reason: `signing_${auth.role}`,
     ...(requestedClientId ? { companyId: requestedClientId } : {}),
   });
-}
-
-/**
- * A contractor may only ever address their own company.
- *
- * `scoped` already pins a CLIENT session to its own tenant, so a mismatched id
- * would return an empty result rather than somebody else's data. This turns
- * that silence into a 403, because a contractor who mistypes an id should be
- * told they cannot look there rather than shown an empty agreements list and
- * left to conclude nothing was ever sent.
- */
-function resolveClientId(req: FastifyRequest, requested: string | null | undefined): string | null {
-  const auth = req.apiAuth!;
-  if (auth.role !== 'CLIENT') return requested ?? null;
-  if (!auth.clientId) throw forbidden('This account is not linked to a contractor company');
-  if (requested && requested !== auth.clientId) {
-    throw forbidden('You can only view agreements for your own company');
-  }
-  return auth.clientId;
 }
 
 const SELECT = `
