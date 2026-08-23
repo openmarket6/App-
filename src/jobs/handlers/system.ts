@@ -32,6 +32,48 @@ async function cleanupIdempotency(): Promise<unknown> {
 }
 
 /**
+ * Expired and revoked refresh tokens.
+ *
+ * The schedule for this has existed since 0007 and the handler never did, so
+ * every six hours the worker took the job, found nothing registered, and failed
+ * it permanently. That is four permanent failures a day in the failed-jobs
+ * list, which is the sort of standing noise that gets the list stopped being
+ * read -- and the real failures with it.
+ *
+ * Meanwhile nothing was ever deleted. ocs.refresh_tokens keeps a row per
+ * sign-in, and rows for sessions that expired or were revoked are not merely
+ * clutter: a revoked token's hash sitting in the table forever is a credential
+ * record kept long after there is any reason to hold it.
+ *
+ * Revoked rows are kept for a week rather than deleted on sight. "This session
+ * was signed out at 14:02 on Tuesday" is the answer to a question somebody
+ * asks after a suspicious login, and a row deleted the moment it was revoked
+ * cannot answer it.
+ */
+const REVOKED_RETENTION_DAYS = 7;
+
+async function cleanupRefreshTokens(): Promise<unknown> {
+  return withServiceContext(
+    async (tx) => {
+      const expired = await tx.query(
+        `delete from ocs.refresh_tokens where expires_at < now()`,
+      );
+      const revoked = await tx.query(
+        `delete from ocs.refresh_tokens
+          where revoked_at is not null
+            and revoked_at < now() - make_interval(days => $1)`,
+        [REVOKED_RETENTION_DAYS],
+      );
+      return {
+        expired: expired.rowCount ?? 0,
+        revoked: revoked.rowCount ?? 0,
+      };
+    },
+    { reason: 'cleanup_refresh_tokens' },
+  );
+}
+
+/**
  * Re-drive webhooks that failed to process.
  *
  * A Stripe event we received but could not apply means our records disagree
@@ -219,6 +261,7 @@ export function register(): void {
   registerHandler('system.reap_stuck_jobs', reap);
   registerHandler('integrations.coverage_report', integrationCoverage);
   registerHandler('system.cleanup_idempotency', cleanupIdempotency);
+  registerHandler('system.cleanup_refresh_tokens', cleanupRefreshTokens);
   registerHandler('system.retry_failed_webhooks', retryFailedWebhooks);
   registerHandler('payments.reconcile', reconcilePayments);
   registerHandler('documents.purge_expired', purgeDeletedDocuments);

@@ -38,6 +38,18 @@ export function registeredJobTypes(): string[] {
   return [...handlers.keys()].sort();
 }
 
+/**
+ * One handler by name.
+ *
+ * Exists so a test can run a job the way the worker runs it, rather than
+ * importing the function directly and proving only that it works when called —
+ * which says nothing about whether the worker would ever call it. A handler
+ * that works and is not registered is the failure this is here to catch.
+ */
+export function getHandler(jobType: string): JobHandler | undefined {
+  return handlers.get(jobType);
+}
+
 const WORKER_ID = `${process.env.RENDER_INSTANCE_ID ?? 'local'}-${randomUUID().slice(0, 8)}`;
 
 let running = false;
